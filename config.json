@@ -39,8 +39,9 @@
     },
     "mic": {
         "index": -1,
-        "enabled": false,
+        "enabled": true,
         "threshold_db": -40,
-        "sample_rate": 44100
+        "sample_rate": 44100,
+        "devices": []
     }
 }

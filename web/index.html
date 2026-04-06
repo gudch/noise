@@ -249,22 +249,21 @@ html,body,#app{height:100%;font-family:"Microsoft YaHei",system-ui,sans-serif}
 
             <!-- 室内麦克风 -->
             <div class="setting-section">
-              <h3>🎙️ 室内麦克风 (多设备声源过滤)</h3>
-              <div class="desc">勾选除检波器外的所有麦克风，用于检测室内说话/活动声并自动抑制误报</div>
+              <h3>🎙️ 室内麦克风 (声源过滤)</h3>
+              <div class="desc">勾选除检波器外的麦克风。当室内有说话/走动声时自动过滤，避免把自己的活动误报为楼上噪音。<br>
+                <span style="color:#909399;font-size:12px">💡 原理：麦克风检测到突发声音（比环境底噪高6dB）时，同一时刻检波器的振动会被判为"自家活动"而忽略。无需手动设置阈值，全自动。</span></div>
               <el-form label-position="top" size="default">
                 <el-form-item><el-switch v-model="micEnabled" active-text="开启" inactive-text="关闭" /></el-form-item>
-                <el-form-item v-if="micEnabled" label="选择室内麦克风（可多选，检波器自动排除）">
+                <el-form-item v-if="micEnabled" label="选择室内麦克风（可多选，检波器已自动排除）">
                   <el-checkbox-group v-model="micDevices">
-                    <div v-for="d in devices.filter(x => x.index !== selDevice)" :key="'mic'+d.index" style="display:flex;align-items:center;gap:8px;margin:4px 0">
-                      <el-checkbox :value="d.index" :label="d.name+' ['+d.host_api+'] '+d.sample_rate+'Hz'" />
-                      <el-button size="small" :loading="micTesting[d.index]" @click="testMic(d.index)" plain>试听</el-button>
-                      <el-button v-if="micTestResult[d.index]?.ok" size="small" @click="playMicTest(d.index)" plain>▶</el-button>
+                    <div v-for="d in devices.filter(x => x.index !== selDevice)" :key="'mic'+d.index" style="display:flex;align-items:center;gap:8px;margin:6px 0;flex-wrap:wrap">
+                      <el-checkbox :value="d.index">{{d.name}} [{{d.host_api}}] {{d.sample_rate}}Hz</el-checkbox>
+                      <el-button size="small" :loading="micTesting[d.index]" @click="testMic(d.index)" plain>试听 2s</el-button>
+                      <el-button v-if="micTestResult[d.index]?.ok" size="small" @click="playMicTest(d.index)" type="success" plain>▶ 播放</el-button>
                       <span v-if="micTestResult[d.index]" style="font-size:12px" :style="{color:micTestResult[d.index].ok?'#67c23a':'#f56c6c'}">{{micTestResult[d.index].msg}}</span>
                     </div>
                   </el-checkbox-group>
-                </el-form-item>
-                <el-form-item v-if="micEnabled" label="室内声音阈值 (dB) — 超过此值视为室内有声">
-                  <el-slider v-model="micThresholdDb" :min="-70" :max="-10" :step="1" show-input input-size="small" />
+                  <div style="margin-top:8px;font-size:12px;color:#909399">⚠️ 建议选择 WASAPI 版本的设备以获得最佳音质。同一物理设备只需选一个。</div>
                 </el-form-item>
               </el-form>
             </div>
@@ -616,7 +615,7 @@ const app = createApp({
         const r=await fetch('/api/test-mic',{method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({device_index:devIdx})});
         const d=await r.json();
-        if(d.ok){ micTestResult.value={...micTestResult.value,[devIdx]:{ok:true,msg:`✅ ${d.rms_db}dB ${d.device}`}}; }
+        if(d.ok){ micTestResult.value={...micTestResult.value,[devIdx]:{ok:true,msg:`✅ ${d.rms_db}dB ${d.sr}Hz ${d.api}`}}; }
         else{ micTestResult.value={...micTestResult.value,[devIdx]:{ok:false,msg:'❌ '+d.error}}; }
       }catch(e){ micTestResult.value={...micTestResult.value,[devIdx]:{ok:false,msg:'❌ 请求失败'}}; }
       micTesting.value={...micTesting.value,[devIdx]:false};
@@ -637,7 +636,7 @@ const app = createApp({
             alert_enabled:alertEnabled.value, alert_sound:alertSound.value,
             alert_interval:alertInterval.value,
             schedule_enabled:schedEnabled.value, schedule_start:schedStart.value, schedule_end:schedEnd.value,
-            mic_enabled:micEnabled.value, mic_devices:micDevices.value, mic_threshold_db:micThresholdDb.value,
+            mic_enabled:micEnabled.value, mic_devices:micDevices.value,
           })});
         if(!r.ok) throw new Error('HTTP '+r.status);
         ElementPlus.ElMessage.success('设置已保存');
@@ -696,9 +695,9 @@ const app = createApp({
       devices,selDevice,testing,testOk,testMsg,
       sensitivityDb,recEnabled,keepDays,
       alertEnabled,alertSound,alertSounds,alertInterval,schedEnabled,schedStart,schedEnd,
-      micEnabled,micDevices,micThresholdDb,micTesting,micTestResult,testMic,playMicTest,
+      micEnabled,micDevices,micTesting,micTestResult,testMic,playMicTest,
       waveCanvas,specCanvas,dailyChart,hourlyChart,
-      toggling,toggleMonitor,doCalibrate,loadDevices,switchDevice,testDev,playTest,testMic,playMicTest,
+      toggling,toggleMonitor,doCalibrate,loadDevices,switchDevice,testDev,playTest,
       saveSettings,previewAlert,playRec,loadEvents,fmtTime,
       Refresh,Monitor,List,DataLine,Setting,
     };

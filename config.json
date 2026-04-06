@@ -1,8 +1,8 @@
 {
     "device": {
-        "index": 1,
+        "index": 9,
         "name": "本机麦克风 (适用于数字麦克风的英特尔® 智音技术)",
-        "sample_rate": 44100,
+        "sample_rate": 48000,
         "block_size": 1024
     },
     "detection": {

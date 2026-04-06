@@ -1321,7 +1321,7 @@ async def test_device(request: Request):
     return result
 
 def _test_sync(idx):
-    """测试设备录音 — 共享模式 + 带通滤波 + 归一化"""
+    """测试设备录音 — WASAPI exclusive + 带通滤波 + 归一化"""
     try:
         idx = int(idx)
         info = sd.query_devices(idx)
@@ -1331,9 +1331,29 @@ def _test_sync(idx):
         # 等待 WASAPI exclusive 句柄完全释放
         time.sleep(0.5)
         
-        audio = sd.rec(int(sr * dur), samplerate=sr, channels=1,
-                       device=idx, dtype='float32', blocking=True)
-        audio = audio[:, 0]
+        # 用 InputStream + WASAPI exclusive 录制（和正式监测一致）
+        extra = _wasapi_extra(idx)
+        frames = []
+        def cb(indata, frame_count, time_info, status):
+            frames.append(indata[:, 0].copy())
+        api_tag = 'shared'
+        try:
+            stream = sd.InputStream(device=idx, samplerate=sr, channels=1,
+                                    blocksize=1024, dtype='float32', callback=cb,
+                                    latency='low', extra_settings=extra)
+            stream.start()
+            if extra:
+                api_tag = 'WASAPI-EX'
+        except Exception:
+            stream = sd.InputStream(device=idx, samplerate=sr, channels=1,
+                                    blocksize=1024, dtype='float32', callback=cb,
+                                    latency='low')
+            stream.start()
+            api_tag = 'shared-fallback'
+        time.sleep(dur)
+        stream.stop()
+        stream.close()
+        audio = np.concatenate(frames) if frames else np.zeros(sr)
         
         raw_rms = float(np.sqrt(np.mean(audio**2)))
         raw_peak = float(np.max(np.abs(audio)))
@@ -1363,7 +1383,7 @@ def _test_sync(idx):
         api_name = sd.query_hostapis(info['hostapi'])['name']
         return {'ok': True, 'rms_db': rms_db, 'peak': round(raw_peak, 6),
                 'sr': sr, 'channels': 1, 'device': info['name'],
-                'api': api_name}
+                'api': f'{api_name} ({api_tag})'}
     except Exception as e:
         return {'ok': False, 'error': str(e)}
 
@@ -1387,15 +1407,37 @@ async def test_mic(request: Request):
     return result
 
 def _test_mic_sync(idx):
+    """试听麦克风 — WASAPI exclusive 录制原始音频"""
     try:
         info = sd.query_devices(idx)
         if info['max_input_channels'] <= 0:
             return {'ok': False, 'error': '不是输入设备'}
         sr = int(info['default_samplerate'])
         dur = 2
-        audio = sd.rec(int(sr * dur), samplerate=sr, channels=1,
-                       device=idx, dtype='float32', blocking=True)
-        audio = audio[:, 0]
+        
+        extra = _wasapi_extra(idx)
+        frames = []
+        def cb(indata, frame_count, time_info, status):
+            frames.append(indata[:, 0].copy())
+        api_tag = 'shared'
+        try:
+            stream = sd.InputStream(device=idx, samplerate=sr, channels=1,
+                                    blocksize=1024, dtype='float32', callback=cb,
+                                    latency='low', extra_settings=extra)
+            stream.start()
+            if extra:
+                api_tag = 'WASAPI-EX'
+        except Exception:
+            stream = sd.InputStream(device=idx, samplerate=sr, channels=1,
+                                    blocksize=1024, dtype='float32', callback=cb,
+                                    latency='low')
+            stream.start()
+            api_tag = 'shared-fallback'
+        time.sleep(dur)
+        stream.stop()
+        stream.close()
+        audio = np.concatenate(frames) if frames else np.zeros(sr)
+        
         rms = float(np.sqrt(np.mean(audio**2)))
         rms_db = round(20 * np.log10(max(rms, 1e-10)), 1)
         peak = float(np.max(np.abs(audio)))
@@ -1409,7 +1451,8 @@ def _test_mic_sync(idx):
             wf.writeframes(pcm.tobytes())
         api_name = sd.query_hostapis(info['hostapi'])['name']
         return {'ok': True, 'rms_db': rms_db, 'peak': round(peak, 6),
-                'device': info['name'], 'api': api_name, 'device_index': idx}
+                'sr': sr, 'device': info['name'],
+                'api': f'{api_name} ({api_tag})', 'device_index': idx}
     except Exception as e:
         return {'ok': False, 'error': str(e)}
 

@@ -1272,11 +1272,12 @@ _ensure_knock()
 # 内置音效列表
 def _list_alerts():
     labels = {'knock.wav': '敲墙声 (咚咚咚)', 'water_drop.wav': '水滴声', 'qq_online.wav': 'QQ上线',
-              'qq_msg.wav': 'QQ消息', 'wechat_msg.wav': '微信消息'}
+              'qq_msg.wav': 'QQ消息', 'wechat_msg.wav': '微信消息', 'default_beep.wav': '默认提示音',
+              'close_door.mp3': '关门声'}
     result = []
     if os.path.isdir(ALERTS_DIR):
         for f in sorted(os.listdir(ALERTS_DIR)):
-            if f.endswith('.wav'):
+            if f.endswith(('.wav', '.mp3')):
                 result.append({'file': f, 'label': labels.get(f, f)})
     return result
 
@@ -1538,7 +1539,8 @@ async def get_alert_sound(name: str):
     path = os.path.join(ALERTS_DIR, safe)
     if not os.path.exists(path):
         return JSONResponse({'error': 'not found'}, 404)
-    return FileResponse(path, media_type='audio/wav')
+    mime = 'audio/mpeg' if safe.endswith('.mp3') else 'audio/wav'
+    return FileResponse(path, media_type=mime)
 
 @app.get('/api/events')
 async def get_events():

@@ -242,6 +242,7 @@ html,body,#app{height:100%;font-family:"Microsoft YaHei",system-ui,sans-serif}
                 <el-form-item>
                   <el-button type="primary" @click="testDev" :loading="testing" plain>试听 3 秒</el-button>
                   <el-button v-if="testOk" @click="playTest" plain size="small">▶ 播放</el-button>
+                  <el-button v-if="testOk" @click="playTestFiltered" plain size="small">▶ 检测引擎听到的</el-button>
                   <span style="margin-left:10px;font-size:13px" :style="{color:testOk?'#67c23a':'#8c8c8c'}">{{ testMsg }}</span>
                 </el-form-item>
               </el-form>
@@ -608,6 +609,9 @@ const app = createApp({
     function playTest(){
       new Audio('/api/test-playback?t='+Date.now()).play().catch(()=>{});
     }
+    function playTestFiltered(){
+      new Audio('/api/test-playback-filtered?t='+Date.now()).play().catch(()=>{});
+    }
     async function testMic(devIdx){
       micTesting.value={...micTesting.value,[devIdx]:true};
       micTestResult.value={...micTestResult.value,[devIdx]:{ok:false,msg:'暂停监测, 录音中...'}};
@@ -697,7 +701,7 @@ const app = createApp({
       alertEnabled,alertSound,alertSounds,alertInterval,schedEnabled,schedStart,schedEnd,
       micEnabled,micDevices,micTesting,micTestResult,testMic,playMicTest,
       waveCanvas,specCanvas,dailyChart,hourlyChart,
-      toggling,toggleMonitor,doCalibrate,loadDevices,switchDevice,testDev,playTest,
+      toggling,toggleMonitor,doCalibrate,loadDevices,switchDevice,testDev,playTest,playTestFiltered,
       saveSettings,previewAlert,playRec,loadEvents,fmtTime,
       Refresh,Monitor,List,DataLine,Setting,
     };

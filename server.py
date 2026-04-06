@@ -1404,7 +1404,7 @@ async def test_device(request: Request):
     return result
 
 def _test_sync(idx):
-    """测试检波器录音 — sd.rec() 直接录制，带通滤波+放大"""
+    """测试检波器录音 — 生成两个WAV: 原始音频 + 检测引擎滤波后音频"""
     try:
         idx = int(idx)
         rec_idx = _find_test_device(idx)  # WASAPI→DirectSound 避免设备锁
@@ -1419,7 +1419,18 @@ def _test_sync(idx):
         raw_rms = float(np.sqrt(np.mean(audio**2)))
         raw_peak = float(np.max(np.abs(audio)))
         
-        # 带通滤波 (检波器: 只保留 5-250Hz 振动信号)
+        # === 原始录音 (轻度归一化, 保留全频段, 让用户听到真实声音) ===
+        raw_audio = audio.copy()
+        rpeak = float(np.max(np.abs(raw_audio)))
+        if rpeak > 1e-6:
+            raw_audio = raw_audio * min(0.8 / rpeak, 50.0)
+        raw_path = os.path.join(BASE_DIR, 'web', 'test_rec.wav')
+        with wave.open(raw_path, 'w') as wf:
+            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
+            pcm = (raw_audio * 32767).clip(-32768, 32767).astype(np.int16)
+            wf.writeframes(pcm.tobytes())
+        
+        # === 滤波后录音 (5-250Hz 带通, 展示检测引擎"听"到的信号) ===
         try:
             sos = _build_bandpass(sr)
             filtered = sosfilt(sos, audio)
@@ -1428,17 +1439,15 @@ def _test_sync(idx):
         except Exception as e:
             print(f'[TEST] 滤波器失败: {e}')
             filtered = audio
-        
-        # 强归一化 (检波器信号极弱, 必须大幅放大才能听见)
         fpeak = float(np.max(np.abs(filtered)))
         if fpeak > 1e-6:
             filtered = filtered * (0.7 / fpeak)
-        
-        path = os.path.join(BASE_DIR, 'web', 'test_rec.wav')
-        with wave.open(path, 'w') as wf:
+        filt_path = os.path.join(BASE_DIR, 'web', 'test_rec_filtered.wav')
+        with wave.open(filt_path, 'w') as wf:
             wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
             pcm = (filtered * 32767).clip(-32768, 32767).astype(np.int16)
             wf.writeframes(pcm.tobytes())
+        
         rms_db = round(20 * np.log10(max(raw_rms, 1e-10)), 1)
         api_name = sd.query_hostapis(info['hostapi'])['name']
         return {'ok': True, 'rms_db': rms_db, 'peak': round(raw_peak, 6),
@@ -1450,6 +1459,14 @@ def _test_sync(idx):
 @app.get('/api/test-playback')
 async def test_playback():
     path = os.path.join(BASE_DIR, 'web', 'test_rec.wav')
+    if not os.path.exists(path):
+        return JSONResponse({'error': '无录音'}, 404)
+    return FileResponse(path, media_type='audio/wav',
+                        headers={'Cache-Control': 'no-store'})
+
+@app.get('/api/test-playback-filtered')
+async def test_playback_filtered():
+    path = os.path.join(BASE_DIR, 'web', 'test_rec_filtered.wav')
     if not os.path.exists(path):
         return JSONResponse({'error': '无录音'}, 404)
     return FileResponse(path, media_type='audio/wav',

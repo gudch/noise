@@ -106,12 +106,8 @@ html,body,#app{height:100%;font-family:"Microsoft YaHei",system-ui,sans-serif}
               <h2 :style="{color:statusColor}">{{ statusText }}</h2>
               <p>{{ statusDetail }}</p>
               <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
-                <el-tag v-if="cls==='impact'" type="danger" effect="dark" size="small">💥 冲击</el-tag>
-                <el-tag v-else-if="cls==='step'" type="warning" effect="dark" size="small">👣 脚步</el-tag>
-                <el-tag v-else-if="cls==='drag'" type="warning" size="small">🪑 拖拽</el-tag>
-                <el-tag v-else-if="cls==='rumble'" type="info" size="small">🔊 共振</el-tag>
+                <el-tag v-if="cls==='noise'" type="danger" effect="dark" size="small">🔴 检测到噪音</el-tag>
                 <el-tag v-if="frame.sta_lta>3" type="danger" size="small">⚡ STA/LTA {{frame.sta_lta}}</el-tag>
-                <el-tag v-if="frame.periodicity>0.3" type="warning" size="small">🚶 周期 {{frame.periodicity}}</el-tag>
                 <el-tag v-if="frame.mic_enabled && frame.mic_spike" type="danger" size="small">🎙️ 自家活动 {{frame.mic_rms_db}}dB</el-tag>
                 <el-tag v-else-if="frame.mic_enabled && frame.mic_active" type="success" size="small">🎙️ 室内背景 {{frame.mic_rms_db}}dB</el-tag>
                 <el-tag v-else-if="frame.mic_enabled && !frame.mic_active" size="small">🎙️ 室内安静</el-tag>
@@ -144,14 +140,9 @@ html,body,#app{height:100%;font-family:"Microsoft YaHei",system-ui,sans-serif}
             <div class="mc-sub">地震检测比 · &gt;3 触发</div>
           </div>
           <div class="metric-card">
-            <div class="mc-label"><span class="dot" :style="{background:frame.periodicity>0.4?'#e6a23c':'#67c23a'}"></span> 步态周期性</div>
-            <div class="mc-value" :style="{color:frame.periodicity>0.4?'#e6a23c':'#67c23a'}">{{ frame.periodicity ?? 0 }}</div>
-            <div class="mc-sub">&gt;0.3 走路 · 0 单次撞击</div>
-          </div>
-          <div class="metric-card">
             <div class="mc-label"><span class="dot" :style="{background:(frame.kurtosis??3)>8?'#f56c6c':(frame.kurtosis??3)>5?'#e6a23c':'#67c23a'}"></span> 峰度(Kurtosis)</div>
             <div class="mc-value" :style="{color:(frame.kurtosis??3)>8?'#f56c6c':(frame.kurtosis??3)>5?'#e6a23c':'#67c23a'}">{{ frame.kurtosis ?? 3.0 }}</div>
-            <div class="mc-sub">&gt;6 真实冲击 · 3~4 噪声 · &lt;3 干扰</div>
+            <div class="mc-sub">&gt;3.5 真实振动 · &lt;3.5 可能是干扰</div>
           </div>
         </div>
 
@@ -308,12 +299,6 @@ html,body,#app{height:100%;font-family:"Microsoft YaHei",system-ui,sans-serif}
                     {{ sensitivityDb<=4?'🔴 极灵敏 · 轻微走动都报警':sensitivityDb<=6?'🟡 灵敏 · 正常走路触发':sensitivityDb<=10?'🟢 适中 · 只报明显动静(重走/拖家具)':sensitivityDb<=15?'🟠 宽松 · 只报较大振动(跺脚/摔东西)':sensitivityDb<=25?'🔵 很宽松 · 只报剧烈冲击':'⚪ 极宽松 · 几乎不报警' }}
                   </div>
                 </el-form-item>
-                <el-form-item label="确认帧数 (越大越不易误报)">
-                  <el-input-number v-model="confirmFrames" :min="1" :max="10" />
-                </el-form-item>
-                <el-form-item label="冷却时间 (秒)">
-                  <el-input-number v-model="cooldownSec" :min="0.5" :max="30" :step="0.5" />
-                </el-form-item>
               </el-form>
             </div>
 
@@ -404,8 +389,6 @@ const app = createApp({
     const testOk = ref(false);
     const testMsg = ref('');
     const sensitivityDb = ref(6);
-    const confirmFrames = ref(2);
-    const cooldownSec = ref(2.0);
     const recEnabled = ref(true);
     const keepDays = ref(30);
     const alertEnabled = ref(true);
@@ -445,9 +428,8 @@ const app = createApp({
           for(const n of msg.notifs){
             if(n.type==='event_started'){
               playAlertIfEnabled();
-              const labels={impact:'💥 冲击(掉东西/跺脚/关门)',step:'👣 脚步(走路)',drag:'🪑 拖拽(家具)',rumble:'🔊 持续振动'};
-              ElementPlus.ElNotification({title:'🚨 检测到楼上振动',
-                message:labels[n.data.cls]||n.data.cls,
+              ElementPlus.ElNotification({title:'🚨 检测到楼上噪音',
+                message:'振动信号超过阈值',
                 type:'warning',duration:5000});
             }
             if(n.type==='event_ended'){
@@ -480,42 +462,34 @@ const app = createApp({
       if(s==='muted') return 'muted';
       if(s==='calibrating') return 'idle';
       const c = cls.value;
-      if(c==='impact') return 'danger';
-      if(c==='step'||c==='drag'||c==='rumble') return 'warn';
+      if(c==='noise') return 'danger';
       return 'ok';
     });
     const statusIcon = computed(()=>{
       if(!monitoring.value) return '⏸️';
       const s = frame.value.state;
-      if(s==='muted') return '🔇';
       if(s==='calibrating') return '🎯';
-      const m = {impact:'💥',step:'👣',drag:'🪑',rumble:'🔊',silent:'✅'};
-      return m[cls.value]||'✅';
+      if(cls.value==='noise') return '🔴';
+      return '✅';
     });
     const statusText = computed(()=>{
       if(!monitoring.value) return '监控未启动';
       const s = frame.value.state;
-      if(s==='muted') return '报警静默中';
       if(s==='calibrating') return '校准中...';
       return frame.value.cls_label || '安静';
     });
     const statusColor = computed(()=>{
       if(!monitoring.value) return '#8c8c8c';
       const s = frame.value.state;
-      if(s==='muted') return '#42a5f5';
-      const m = {impact:'#f56c6c',step:'#e6a23c',drag:'#e6a23c',rumble:'#909399',silent:'#67c23a'};
+      const m = {noise:'#f56c6c',silent:'#67c23a'};
       return m[cls.value] || '#67c23a';
     });
     const statusDetail = computed(()=>{
       if(!monitoring.value) return '点击底部按钮开始监控';
       const f = frame.value;
-      if(f.state==='muted'){
-        const rem = f.alert_mute_remaining || 0;
-        return `已报警，${Math.ceil(rem)}秒后恢复报警`;
-      }
       if(f.state==='calibrating') return '请保持安静...';
       if(cls.value==='silent') return `SM-24 检波器运行中 · 底噪 ${f.noise_floor_db??'—'}dB · 灵敏度 ${f.sensitivity_db??'—'}dB`;
-      return `超出底噪 ${f.excess_db??0}dB · 波峰 ${f.crest??0} · STA/LTA ${f.sta_lta??0} · 峰度 ${f.kurtosis??3.0}`;
+      return `检测到噪音 · 超出底噪 ${f.excess_db??0}dB · 峰度 ${f.kurtosis??3.0}`;
     });
 
     // 图表
@@ -593,8 +567,6 @@ const app = createApp({
         _loadingSettings=true;
         selDevice.value=s.device?.index??-1;
         sensitivityDb.value=s.detection?.sensitivity_db??6;
-        confirmFrames.value=s.detection?.confirm_frames??2;
-        cooldownSec.value=s.detection?.cooldown_seconds??2.0;
         recEnabled.value=s.recording?.enabled??true;
         keepDays.value=s.recording?.max_keep_days??30;
         alertEnabled.value=s.alert?.enabled??true;
@@ -640,8 +612,8 @@ const app = createApp({
       try{
         const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({
-            sensitivity_db:sensitivityDb.value, confirm_frames:confirmFrames.value,
-            cooldown_seconds:cooldownSec.value, recording_enabled:recEnabled.value,
+            sensitivity_db:sensitivityDb.value,
+            recording_enabled:recEnabled.value,
             keep_days:keepDays.value, device_index:selDevice.value,
             alert_enabled:alertEnabled.value, alert_sound:alertSound.value,
             alert_interval:alertInterval.value,
@@ -703,7 +675,7 @@ const app = createApp({
       tab,monitoring,frame,cls,events,stats,
       bannerClass,statusIcon,statusText,statusColor,statusDetail,
       devices,selDevice,testing,testOk,testMsg,
-      sensitivityDb,confirmFrames,cooldownSec,recEnabled,keepDays,
+      sensitivityDb,recEnabled,keepDays,
       alertEnabled,alertSound,alertSounds,alertInterval,schedEnabled,schedStart,schedEnd,
       micEnabled,micDevice,micThresholdDb,
       waveCanvas,specCanvas,dailyChart,hourlyChart,

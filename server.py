@@ -1,19 +1,17 @@
-﻿"""NoiseGuard v3 — SM-24 检波器专用楼上噪音监测系统
+﻿"""NoiseGuard v4 — SM-24 检波器楼上噪音监测系统
 
-以 SM-24 地震检波器为唯一传感器核心:
-- 10Hz 自然频率, 有效范围 10-240Hz, 完美覆盖楼板振动
-- 28.8 V/m/s 灵敏度, 375Ω 线圈直连声卡
-- 物理层天然过滤人声/自家声音, 只响应楼板结构振动
+设计哲学: 极简检测 + 与人耳对齐
+- 不区分噪音类型（脚步/冲击/拖拽），只判断"有没有噪音"
+- 超阈值即触发，1帧就够，不需要确认帧
+- 无冷却时间、无报警静默期，始终检测
+- 峰度仅用于排除电气干扰(EMI)，不用于分类
 
-检测算法 (基于195个真实录音验证):
-1. 4阶 Butterworth 带通滤波 (5-250Hz) + 50Hz谐波陷波
-2. 整体滤波功率检测 (BW×T=5.6, 统计充分, 误报率≈0)
-   - 持续路径: EMA(α=0.15) + 2×噪声基线 (走路/拖拽)
-   - 瞬态路径: 原始功率 + 4×噪声基线 (冲击/跺脚)
-3. STA/LTA 比值法 — USGS 全球地震网标准算法
-4. FFT频段比例 (仅分类用, 不做检测判定)
-5. 自相关包络跟踪 — 检测步态周期性(0.3-1.5s)
-6. 会议麦辅助 — 室内声源突变过滤 (可选)
+信号处理链:
+1. 4阶 Butterworth 带通滤波 (5-250Hz)
+2. 50Hz谐波陷波 (消除电源EMI)
+3. 整体功率检测 (BW×T=5.6, 统计充分)
+4. 峰度抗干扰 (kurtosis<3.5 + 低能量 = 干扰，忽略)
+5. 百分位自适应基线 (30秒窗口第20百分位)
 """
 import asyncio, json, time, os, wave, collections, threading, math
 import numpy as np
@@ -225,10 +223,6 @@ class VibrationAnalyzer:
         self._sta_buf = collections.deque(maxlen=self._sta_len)
         self._lta_buf = collections.deque(maxlen=self._lta_len)
         
-        # ── 包络跟踪 (步态周期性) ──
-        self._env_buf = collections.deque(maxlen=int(3.0 * sr / block_size))
-        self._prev_excess_db = 0.0
-        
         # ── 整体功率跟踪 (显式初始化, 不用 hasattr) ──
         self._power_ema = 0.0
         self._adapt_overall_power = self._min_noise_power
@@ -377,16 +371,11 @@ class VibrationAnalyzer:
         low_db = 10 * math.log10(max(e_low, 1e-20))
         mid_db = 10 * math.log10(max(e_mid, 1e-20))
         
-        # ── 7. 冲击检测 (V3: 增加峰度约束) ──
-        # V2: jump_db > 4 and sta_lta > 2.0 → 容易被EMI脉冲误触发
-        # V3: 增加 kurt > 5 → 真实冲击有尖锐脉冲, EMI没有
-        jump_db = clean_excess_db - self._prev_excess_db
-        is_impact = jump_db > 4 and sta_lta > 2.0 and kurt > 5
-        self._prev_excess_db = clean_excess_db
+        # ── 7. V4: 删除了冲击检测(is_impact)和帧间跳变(jump_db) ──
+        # 不再需要区分冲击类型，classify_vibration只做二分类
         
-        # ── 8. 步态周期性 ──
-        self._env_buf.append(clean_excess_db)
-        periodicity = self._detect_periodicity() if len(self._env_buf) > 10 else 0.0
+        # ── 8. V4: 删除了步态周期性检测 ──
+        # 用户不需要分类，步态检测已移除
         
         # ── 9. V3: 自适应底噪 (百分位追踪 + 受控双向更新) ──
         # V2问题: 非对称EMA只降不升, 长期运行后基线系统性偏低 → 误报
@@ -429,36 +418,15 @@ class VibrationAnalyzer:
             'crest': round(crest, 1),
             'velocity_um': round(velocity_um, 2),
             'sta_lta': round(sta_lta, 2),
-            'is_impact': is_impact,
-            'jump_db': round(jump_db, 1),
             'excess_db': round(clean_excess_db, 1),
             'effective_floor_db': round(effective_floor, 1),
             'adaptive_floor_db': round(adapt_db, 1),
             'sub_db': round(sub_db, 1), 'low_db': round(low_db, 1), 'mid_db': round(mid_db, 1),
             'sub_ratio': round(sub_ratio, 2), 'low_ratio': round(low_ratio, 2), 'mid_ratio': round(mid_ratio, 2),
-            'periodicity': round(periodicity, 2),
             'kurtosis': round(kurt, 1),
             'spec_f': [round(f, 0) for f in spec_f],
             'spec_db': [round(d, 1) for d in spec_db],
         }
-    
-    def _detect_periodicity(self):
-        """步态周期性检测: 自相关法"""
-        env = np.array(self._env_buf)
-        env = env - np.mean(env)
-        if np.std(env) < 0.3:
-            return 0.0
-        env = env / (np.std(env) + 1e-10)
-        n_env = len(env)
-        fps = self.sr / self.block_size
-        min_lag = max(1, int(0.3 * fps))
-        max_lag = min(n_env // 2, int(1.5 * fps))
-        if min_lag >= max_lag:
-            return 0.0
-        ac = np.correlate(env, env, 'full')[n_env-1:]
-        ac = ac / (ac[0] + 1e-10)
-        peak_ac = float(np.max(ac[min_lag:max_lag]))
-        return max(0.0, min(1.0, peak_ac))
     
     def calibrate(self, audio):
         """频谱指纹校准 — 记录每个频段的底噪基线
@@ -554,57 +522,26 @@ class VibrationAnalyzer:
 #  振动分类器 v2 — 基于频谱减除后的干净信号
 # ═══════════════════════════════════════════════
 def classify_vibration(a, sensitivity_db):
-    """V3 分类振动类型 — 峰度(kurtosis)驱动的自适应阈值
+    """V4 振动判定 — 极简二分类: silent / noise
     
-    核心改进: 信号峰度决定触发灵敏度
-    - 高峰度(≥6): 真实物理冲击(跺脚/掉东西) → 标准阈值
-    - 中峰度(4-6): 走路/拖拽等持续振动 → 1.5×阈值
-    - 低峰度(<4): 类正弦干扰(EMI/触摸板/空调) → 3×阈值
-    
-    效果: 真实楼上事件不受影响(天然高峰度), EMI/环境噪声自动免疫
+    设计哲学: 不区分类型，只判断"有没有噪音"
+    - 超过灵敏度阈值 → 噪音
+    - 低峰度 + 低能量 → 电气干扰，忽略
+    - 其他 → 安静
     """
     excess = a['excess_db']
     kurt = a.get('kurtosis', 3.0)
     
-    # ── 峰度自适应灵敏度 ──
-    # 高峰度 = 真实冲击/振动, 低峰度 = 可能是干扰
-    if kurt >= 6.0:
-        eff_sens = sensitivity_db              # 真实冲击: 标准阈值
-    elif kurt >= 4.0:
-        eff_sens = sensitivity_db * 1.5        # 中等峰度: 稍高阈值
-    else:
-        eff_sens = sensitivity_db * 3.0        # 平滑信号: 高阈值抗干扰
-    
-    if excess < eff_sens:
+    if excess < sensitivity_db:
         return 'silent', '安静'
     
-    crest = a['crest']
-    sta_lta = a['sta_lta']
-    is_impact = a['is_impact']
-    period = a['periodicity']
-    sub_r = a['sub_ratio']
-    mid_r = a['mid_ratio']
+    # 抗干扰: 低峰度(<3.5) + 不太强的信号 → 大概率是EMI/触摸板
+    # 真实物理振动在超阈值时峰度几乎不可能<3.5
+    # 但如果能量特别强(>2倍阈值)，即使低峰度也放行（安全阀）
+    if kurt < 3.5 and excess < sensitivity_db * 2:
+        return 'silent', '安静'
     
-    # 冲击: 高峰度 + STA/LTA飙升 或 帧间跳变+峰度
-    if (kurt > 6 and sta_lta > 2.0) or (is_impact and kurt > 5):
-        return 'impact', '冲击(掉东西/跺脚/关门)'
-    
-    # 脚步: 周期性振动
-    if period > 0.15 and excess >= eff_sens:
-        return 'step', '脚步(走路)'
-    
-    # 拖拽: 中频为主
-    if mid_r > 0.25 and crest < 2.5:
-        return 'drag', '拖拽(家具/椅子)'
-    
-    # 持续: 超低频主导
-    if sub_r > 0.5 and excess > eff_sens * 1.5:
-        return 'rumble', '持续振动(机器/装修)'
-    
-    # 有振动但不好细分
-    if crest > 2.0 and kurt > 4:
-        return 'impact', '振动'
-    return 'rumble', '轻微振动'
+    return 'noise', '检测到噪音'
 
 
 # ═══════════════════════════════════════════════
@@ -641,8 +578,6 @@ class Engine:
         
         # 检测参数
         self._sensitivity_db = det.get('sensitivity_db', 6)  # 超出底噪多少dB才报警
-        self._confirm_need = det.get('confirm_frames', 2)
-        self._cd_sec = det.get('cooldown_seconds', 2.0)
         
         # 校准恢复 (含频谱指纹)
         cal = cfg.calibration
@@ -666,20 +601,11 @@ class Engine:
                     print('[ENGINE] ⚠ noise_band_power 缺失或格式错误, 需要重新校准')
                     self.analyzer.calibrated = False
         
-        # 状态机
+        # V4 状态机
         self._state = 'silent'
-        self._confirm_n = 0
-        self._cd_start = 0
+        self._quiet_count = 0
         self._ev_start = 0
         self._ev_peak_db = -100
-        self._ev_cls = 'unknown'
-        
-        # ── 报警静默 ──
-        # 检测到振动 → 立即报警(前端播放) → 静默N秒(不识别) → 恢复检测
-        # 防止: 1) 报警声通过空气耦合到天花板检波器 2) 同一次活动反复报警
-        alert_cfg = cfg.get('alert') or {}
-        self._alert_mute_until = 0       # timestamp, 在此之前暂停检测
-        self._alert_mute_sec = alert_cfg.get('min_interval_seconds', 10)
         
         # 校准
         self._calibrating = False
@@ -859,6 +785,7 @@ class Engine:
             self._stream = None
         self.monitoring = False
         self._state = 'silent'
+        self._quiet_count = 0
         self._calibrating = False
         # 保存正在进行的录音 (防止 stop 时丢失已录内容)
         if self._rec_active and self._rec_frames and self._rec_fn:
@@ -875,8 +802,6 @@ class Engine:
         self._mic_rms_db = -100.0
         self._mic_baseline_db = -100.0
         self._mic_spike = False
-        self._alert_mute_until = 0
-        self._confirm_n = 0
     
     def _push(self, t, d):
         with self._nlock:
@@ -921,22 +846,7 @@ class Engine:
                 cls, cls_label = 'silent', '校准中'
                 state = 'calibrating'
             
-            # ── 报警静默: 暂停识别, 但强事件可穿透 ──
-            elif now < self._alert_mute_until:
-                cls, cls_label = classify_vibration(a, self._sensitivity_db)
-                # 强事件穿透: 超过阈值2倍 → 打破静默, 立即重新触发
-                if cls != 'silent' and a['excess_db'] > self._sensitivity_db * 2:
-                    self._alert_mute_until = 0
-                    self._tick(a, cls)
-                    state = self._state
-                else:
-                    if cls != 'silent':
-                        remaining = round(self._alert_mute_until - now)
-                        cls_label = f'{cls_label} (静默{remaining}s)'
-                    self._tick(a, 'silent')
-                    state = 'muted'
-            
-            # ── 正常检测 ──
+            # ── 正常检测 (V4: 删除报警静默期，始终检测) ──
             else:
                 # 时段检查
                 in_schedule = True
@@ -948,11 +858,10 @@ class Engine:
                     else:
                         in_schedule = now_hm >= s or now_hm <= e
                 
-                # 分类振动
+                # 分类振动 (V4: 只有 silent / noise)
                 cls, cls_label = classify_vibration(a, self._sensitivity_db)
                 
                 # 会议麦辅助: 室内突发声音 + 同时有振动 → 可能自己碰了天花板
-                # 正常情况天花板检波器不会受自家影响, 这只防极端边界情况
                 mic_filtered = False
                 if self._mic_enabled and cls != 'silent':
                     with self._mic_lock:
@@ -964,7 +873,7 @@ class Engine:
                 # 时段外不报警
                 if not in_schedule and cls != 'silent':
                     cls, cls_label = 'silent', '非监控时段'
-                    mic_filtered = True  # 确保不触发状态机
+                    mic_filtered = True
                 
                 tick_cls = 'silent' if mic_filtered else cls
                 self._tick(a, tick_cls)
@@ -990,7 +899,6 @@ class Engine:
                     'mic_spike': self._mic_spike,
                     'mic_baseline_db': round(self._mic_baseline_db, 1) if self._mic_baseline_db > -95 else -100.0,
                     'mic_threshold_db': self._mic_threshold_db,
-                    'alert_mute_remaining': round(max(0, self._alert_mute_until - time.time()), 1),
                 }
         except Exception as e:
             import traceback
@@ -998,67 +906,55 @@ class Engine:
             traceback.print_exc()
     
     def _tick(self, a, cls):
-        """V3 状态机: silent → active → cooldown → silent
+        """V4 状态机: silent ↔ noise（极简两态）
         
-        V3 改进: 冲击快速触发需要 kurtosis > 8 (防止EMI脉冲误触发)
-        - 高峰度冲击(kurt>8): 1帧立即触发 (真实物理冲击)
-        - 一般冲击/其他振动: 等 confirm_frames 帧确认
+        - silent: 没噪音。收到noise帧 → 立即切换到noise并报警
+        - noise: 有噪音。连续quiet_frames帧安静 → 切换回silent，记录事件
+        
+        不再有confirm_frames、cooldown、静默期。信号超阈值就触发，1帧就够。
         """
         now = time.time()
-        is_vib = cls != 'silent'
-        is_impact = cls == 'impact'
-        kurt = a.get('kurtosis', 3.0)
+        is_noise = cls != 'silent'
         
         if self._state == 'silent':
-            if is_vib:
-                # V3: 只有极高峰度冲击才1帧触发, 其余走确认流程
-                if is_impact and kurt > 8:
-                    self._enter_active(a, cls, now)
-                else:
-                    self._confirm_n += 1
-                    if self._confirm_n >= self._confirm_need:
-                        self._enter_active(a, cls, now)
+            if is_noise:
+                self._enter_noise(a, now)
+        elif self._state == 'noise':
+            if is_noise:
+                # 持续噪音中，更新峰值
+                if a['rms_db'] > self._ev_peak_db:
+                    self._ev_peak_db = a['rms_db']
+                self._quiet_count = 0
             else:
-                self._confirm_n = 0
-        elif self._state == 'active':
-            if a['rms_db'] > self._ev_peak_db:
-                self._ev_peak_db = a['rms_db']
-            if not is_vib:
-                self._state = 'cooldown'
-                self._cd_start = now
-        elif self._state == 'cooldown':
-            if is_vib:
-                self._state = 'active'
-            elif now - self._cd_start > self._cd_sec:
-                self._state = 'silent'
-                self._confirm_n = 0
-                # 保存事件到数据库
-                ts = time.strftime('%Y%m%d_%H%M%S', time.localtime(self._ev_start))
-                rec_path = f'vib_{ts}.wav' if self._rec_active else None
-                self._rec_fn = rec_path
-                if self._rec_active:
-                    self._rec_post = self._rec_post_max
-                self.db.insert_event(
-                    start_time=self._ev_start, end_time=now,
-                    peak_db=self._ev_peak_db, peak_ratio=0,
-                    source=self._ev_cls, recording_path=rec_path)
-                self._push('event_ended', {
-                    'duration': round(now - self._ev_start, 1),
-                    'peak_db': round(self._ev_peak_db, 1),
-                    'source': self._ev_cls})
-                self._st_time = 0
+                # 安静帧，累计计数
+                self._quiet_count += 1
+                # 约0.5秒的安静确认事件结束（~22帧@44100/1024）
+                quiet_threshold = max(5, int(0.5 * self._sr / self._blk))
+                if self._quiet_count >= quiet_threshold:
+                    self._state = 'silent'
+                    # 记录事件到数据库
+                    ts = time.strftime('%Y%m%d_%H%M%S', time.localtime(self._ev_start))
+                    rec_path = f'vib_{ts}.wav' if self._rec_active else None
+                    self._rec_fn = rec_path
+                    if self._rec_active:
+                        self._rec_post = self._rec_post_max
+                    self.db.insert_event(
+                        start_time=self._ev_start, end_time=now,
+                        peak_db=self._ev_peak_db, peak_ratio=0,
+                        source='noise', recording_path=rec_path)
+                    self._push('event_ended', {
+                        'duration': round(now - self._ev_start, 1),
+                        'peak_db': round(self._ev_peak_db, 1),
+                        'source': 'noise'})
     
-    def _enter_active(self, a, cls, now):
-        """进入 active 状态: 触发报警 + 开始录音"""
-        self._state = 'active'
+    def _enter_noise(self, a, now):
+        """进入 noise 状态: 触发报警通知 + 开始录音"""
+        self._state = 'noise'
         self._ev_start = now
         self._ev_peak_db = a['rms_db']
-        self._ev_cls = cls
-        self._confirm_n = 0
-        # 通知前端 (前端收到后立刻播放报警音)
-        self._push('event_started', {'cls': cls})
-        # 设置报警静默: 接下来N秒暂停识别
-        self._alert_mute_until = now + self._alert_mute_sec
+        self._quiet_count = 0
+        # 通知前端（前端自行控制报警音播放间隔）
+        self._push('event_started', {'cls': 'noise'})
         # 开始录音
         if self._rec_on:
             self._rec_active = True
@@ -1132,7 +1028,7 @@ class Engine:
             return 'cancelled'
         self._calibrating = True
         self._state = 'silent'   # 校准时重置状态机
-        self._confirm_n = 0
+        self._quiet_count = 0
         self._cal_frames = []
         self._cal_start = time.time()
         self._cal_result = None
@@ -1166,14 +1062,6 @@ class Engine:
             v = max(1, min(30, float(s['sensitivity_db'])))
             self._sensitivity_db = v
             self.config.set('detection', 'sensitivity_db', v)
-        if 'confirm_frames' in s:
-            v = int(s['confirm_frames'])
-            self._confirm_need = v
-            self.config.set('detection', 'confirm_frames', v)
-        if 'cooldown_seconds' in s:
-            v = float(s['cooldown_seconds'])
-            self._cd_sec = v
-            self.config.set('detection', 'cooldown_seconds', v)
         if 'recording_enabled' in s:
             self._rec_on = bool(s['recording_enabled'])
             self.config.set('recording', 'enabled', self._rec_on)
@@ -1203,9 +1091,7 @@ class Engine:
         if 'alert_sound' in s:
             self.config.set('alert', 'sound', str(s['alert_sound']))
         if 'alert_interval' in s:
-            v = max(1, int(s['alert_interval']))
-            self._alert_mute_sec = v
-            self.config.set('alert', 'min_interval_seconds', v)
+            self.config.set('alert', 'min_interval_seconds', max(1, int(s['alert_interval'])))
         if 'schedule_enabled' in s:
             self._sched_enabled = bool(s['schedule_enabled'])
             self.config.set('schedule', 'enabled', self._sched_enabled)
@@ -1553,7 +1439,7 @@ async def ws_endpoint(ws: WebSocket):
 # ═══════════════════════════════════════════════
 if __name__ == '__main__':
     print('=' * 50)
-    print('  NoiseGuard v2 — SM-24 检波器噪音监测')
+    print('  NoiseGuard v4 — SM-24 检波器噪音监测')
     print('=' * 50)
     print()
     print('  👉  http://127.0.0.1:8899')

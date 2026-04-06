@@ -595,14 +595,14 @@ const app = createApp({
       }catch(e){ ElementPlus.ElMessage.error('切换失败'); }
     }
     async function testDev(){
-      testing.value=true; testOk.value=false; testMsg.value='录音中...';
+      testing.value=true; testOk.value=false; testMsg.value='暂停监测, 录音中...';
       try{
         const r=await fetch('/api/test-device',{method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({device_index:selDevice.value})});
         const d=await r.json();
-        if(d.ok){ testOk.value=true; testMsg.value=`✅ RMS=${d.rms_db}dB peak=${d.peak} ${d.device}`; }
-        else{ testMsg.value='❌ '+d.error; }
-      }catch(e){ testMsg.value='❌ 请求失败'; }
+        if(d.ok){ testOk.value=true; testMsg.value=`✅ ${d.rms_db}dB ${d.sr}Hz ${d.api}`; }
+        else{ testMsg.value='❌ '+(d.error||d.detail||'未知错误'); }
+      }catch(e){ testMsg.value='❌ 服务器无响应'; }
       testing.value=false;
     }
     function playTest(){
@@ -610,14 +610,14 @@ const app = createApp({
     }
     async function testMic(devIdx){
       micTesting.value={...micTesting.value,[devIdx]:true};
-      micTestResult.value={...micTestResult.value,[devIdx]:{ok:false,msg:'录音中...'}};
+      micTestResult.value={...micTestResult.value,[devIdx]:{ok:false,msg:'暂停监测, 录音中...'}};
       try{
         const r=await fetch('/api/test-mic',{method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({device_index:devIdx})});
         const d=await r.json();
         if(d.ok){ micTestResult.value={...micTestResult.value,[devIdx]:{ok:true,msg:`✅ ${d.rms_db}dB ${d.sr}Hz ${d.api}`}}; }
-        else{ micTestResult.value={...micTestResult.value,[devIdx]:{ok:false,msg:'❌ '+d.error}}; }
-      }catch(e){ micTestResult.value={...micTestResult.value,[devIdx]:{ok:false,msg:'❌ 请求失败'}}; }
+        else{ micTestResult.value={...micTestResult.value,[devIdx]:{ok:false,msg:'❌ '+(d.error||d.detail||'未知错误')}}; }
+      }catch(e){ micTestResult.value={...micTestResult.value,[devIdx]:{ok:false,msg:'❌ 服务器无响应'}}; }
       micTesting.value={...micTesting.value,[devIdx]:false};
     }
     function playMicTest(devIdx){

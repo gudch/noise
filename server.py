@@ -63,6 +63,25 @@ def list_input_devices():
     return result
 
 
+def list_input_devices_dedup():
+    """列出物理输入设备 (按设备名去重, 只保留最优API版本)
+    
+    同一物理设备在 Windows 里会出现3次 (WASAPI/DirectSound/MME)。
+    优先保留 WASAPI 版本, 其次 DirectSound, 最后 MME。
+    """
+    all_devs = list_input_devices()
+    seen = {}
+    api_prio = {'Windows WASAPI': 0, 'Windows DirectSound': 1, 'MME': 2}
+    for d in all_devs:
+        name = d['name']
+        prio = api_prio.get(d['host_api'], 9)
+        if name not in seen or prio < api_prio.get(seen[name]['host_api'], 9):
+            seen[name] = d
+    result = list(seen.values())
+    result.sort(key=lambda x: api_prio.get(x['host_api'], 9))
+    return result
+
+
 def resolve_wasapi_device(name_hint=None, fallback_idx=None):
     """智能解析设备: 始终优先选择同名设备的 WASAPI 版本。
     
@@ -1219,7 +1238,7 @@ async def get_status():
 
 @app.get('/api/devices')
 async def get_devices():
-    return list_input_devices()
+    return list_input_devices_dedup()
 
 @app.get('/api/settings')
 async def get_settings():
@@ -1321,55 +1340,77 @@ async def test_device(request: Request):
     return result
 
 def _test_sync(idx):
-    """测试设备录音 — WASAPI exclusive + 带通滤波 + 归一化"""
+    """测试设备录音 — 先尝试 WASAPI exclusive，失败回退共享模式"""
     try:
         idx = int(idx)
         info = sd.query_devices(idx)
         sr = int(info['default_samplerate'])
         dur = 3
         
-        # 等待 WASAPI exclusive 句柄完全释放
-        time.sleep(0.5)
+        # 等待设备句柄释放
+        time.sleep(0.8)
         
-        # 用 InputStream + WASAPI exclusive 录制（和正式监测一致）
         extra = _wasapi_extra(idx)
         frames = []
+        stream = None
+        api_tag = 'shared'
+        
         def cb(indata, frame_count, time_info, status):
             frames.append(indata[:, 0].copy())
-        api_tag = 'shared'
-        try:
-            stream = sd.InputStream(device=idx, samplerate=sr, channels=1,
-                                    blocksize=1024, dtype='float32', callback=cb,
-                                    latency='low', extra_settings=extra)
-            stream.start()
-            if extra:
-                api_tag = 'WASAPI-EX'
-        except Exception:
-            stream = sd.InputStream(device=idx, samplerate=sr, channels=1,
-                                    blocksize=1024, dtype='float32', callback=cb,
-                                    latency='low')
-            stream.start()
-            api_tag = 'shared-fallback'
-        time.sleep(dur)
-        stream.stop()
-        stream.close()
-        audio = np.concatenate(frames) if frames else np.zeros(sr)
+        
+        # 尝试 WASAPI exclusive
+        if extra:
+            try:
+                stream = sd.InputStream(
+                    device=idx, samplerate=sr, channels=1,
+                    blocksize=1024, dtype='float32', callback=cb,
+                    latency='low', extra_settings=extra)
+                stream.start()
+                api_tag = 'WASAPI独占'
+            except Exception as e1:
+                print(f'[TEST] WASAPI独占失败: {e1}')
+                if stream:
+                    try: stream.close()
+                    except: pass
+                stream = None
+        
+        # 回退: 共享模式
+        if stream is None:
+            try:
+                stream = sd.InputStream(
+                    device=idx, samplerate=sr, channels=1,
+                    blocksize=1024, dtype='float32', callback=cb,
+                    latency='low')
+                stream.start()
+                api_tag = '共享模式'
+            except Exception as e2:
+                # 最终回退: sd.rec()
+                print(f'[TEST] InputStream共享也失败: {e2}, 回退sd.rec()')
+                audio = sd.rec(int(sr * dur), samplerate=sr, channels=1,
+                               device=idx, dtype='float32', blocking=True)[:, 0]
+                api_tag = '基本模式'
+                stream = None
+        
+        if stream is not None:
+            time.sleep(dur)
+            stream.stop()
+            stream.close()
+            audio = np.concatenate(frames) if frames else np.zeros(sr)
         
         raw_rms = float(np.sqrt(np.mean(audio**2)))
         raw_peak = float(np.max(np.abs(audio)))
         
-        # Butterworth 带通滤波 (去掉声卡噪底和高频)
+        # Butterworth 带通滤波 (检波器专用: 只保留5-250Hz振动信号)
         try:
             sos = _build_bandpass(sr)
             filtered = sosfilt(sos, audio)
-            # 前 0.1s 是滤波器瞬态, 截掉
             skip = min(int(0.1 * sr), len(filtered) // 4)
             filtered = filtered[skip:]
         except Exception as e:
-            print(f'[TEST] 滤波器构建失败, 使用原始音频: {e}')
+            print(f'[TEST] 滤波器构建失败: {e}')
             filtered = audio
         
-        # 归一化到 -3dB (试听用, 让人耳能听到检波器微弱信号)
+        # 归一化 (检波器信号极弱, 需放大才能听见)
         fpeak = float(np.max(np.abs(filtered)))
         if fpeak > 1e-6:
             filtered = filtered * (0.7 / fpeak)
@@ -1397,17 +1438,22 @@ async def test_playback():
 
 @app.post('/api/test-mic')
 async def test_mic(request: Request):
-    """试听麦克风 — 录制2秒原始音频（不滤波，仅轻度归一化）"""
+    """试听麦克风 — 暂停监测，录制2秒原始音频"""
     body = await request.json()
     idx = body.get('device_index')
     if idx is None:
-        return JSONResponse({'error': 'no device'}, 400)
+        return JSONResponse({'error': '未指定设备'}, 400)
+    was = engine.monitoring
+    if was:
+        engine.stop()
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, _test_mic_sync, int(idx))
+    if was:
+        engine.start()
     return result
 
 def _test_mic_sync(idx):
-    """试听麦克风 — WASAPI exclusive 录制原始音频"""
+    """试听麦克风 — 三级回退录制原始音频"""
     try:
         info = sd.query_devices(idx)
         if info['max_input_channels'] <= 0:
@@ -1415,33 +1461,58 @@ def _test_mic_sync(idx):
         sr = int(info['default_samplerate'])
         dur = 2
         
+        time.sleep(0.5)
+        
         extra = _wasapi_extra(idx)
         frames = []
+        stream = None
+        api_tag = '共享模式'
+        
         def cb(indata, frame_count, time_info, status):
             frames.append(indata[:, 0].copy())
-        api_tag = 'shared'
-        try:
-            stream = sd.InputStream(device=idx, samplerate=sr, channels=1,
-                                    blocksize=1024, dtype='float32', callback=cb,
-                                    latency='low', extra_settings=extra)
-            stream.start()
-            if extra:
-                api_tag = 'WASAPI-EX'
-        except Exception:
-            stream = sd.InputStream(device=idx, samplerate=sr, channels=1,
-                                    blocksize=1024, dtype='float32', callback=cb,
-                                    latency='low')
-            stream.start()
-            api_tag = 'shared-fallback'
-        time.sleep(dur)
-        stream.stop()
-        stream.close()
-        audio = np.concatenate(frames) if frames else np.zeros(sr)
+        
+        # 尝试 WASAPI exclusive
+        if extra:
+            try:
+                stream = sd.InputStream(
+                    device=idx, samplerate=sr, channels=1,
+                    blocksize=1024, dtype='float32', callback=cb,
+                    latency='low', extra_settings=extra)
+                stream.start()
+                api_tag = 'WASAPI独占'
+            except Exception as e1:
+                print(f'[MIC-TEST] WASAPI独占失败: {e1}')
+                if stream:
+                    try: stream.close()
+                    except: pass
+                stream = None
+        
+        # 回退: InputStream 共享模式
+        if stream is None:
+            try:
+                stream = sd.InputStream(
+                    device=idx, samplerate=sr, channels=1,
+                    blocksize=1024, dtype='float32', callback=cb,
+                    latency='low')
+                stream.start()
+                api_tag = '共享模式'
+            except Exception as e2:
+                print(f'[MIC-TEST] InputStream也失败: {e2}, 回退sd.rec()')
+                audio = sd.rec(int(sr * dur), samplerate=sr, channels=1,
+                               device=idx, dtype='float32', blocking=True)[:, 0]
+                api_tag = '基本模式'
+                stream = None
+        
+        if stream is not None:
+            time.sleep(dur)
+            stream.stop()
+            stream.close()
+            audio = np.concatenate(frames) if frames else np.zeros(sr)
         
         rms = float(np.sqrt(np.mean(audio**2)))
         rms_db = round(20 * np.log10(max(rms, 1e-10)), 1)
         peak = float(np.max(np.abs(audio)))
-        # 轻度归一化: 只防削波, 不过度放大
+        # 轻度归一化: 只防削波
         if peak > 0.01:
             audio = audio * min(0.9 / peak, 3.0)
         path = os.path.join(BASE_DIR, 'web', f'test_mic_{idx}.wav')

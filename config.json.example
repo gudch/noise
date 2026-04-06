@@ -1,7 +1,7 @@
 {
     "device": {
-        "index": 9,
-        "name": "本机麦克风 (适用于数字麦克风的英特尔® 智音技术)",
+        "index": -1,
+        "name": null,
         "sample_rate": 48000,
         "block_size": 1024
     },
@@ -23,14 +23,10 @@
         "min_interval_seconds": 3
     },
     "calibration": {
-        "calibrated": true,
-        "noise_floor_db": -116.65873452962104,
+        "calibrated": false,
+        "noise_floor_db": -100,
         "duration_seconds": 5,
-        "noise_band_power": [
-            1e-10,
-            1e-10,
-            1e-10
-        ]
+        "noise_band_power": [1e-10, 1e-10, 1e-10]
     },
     "schedule": {
         "enabled": false,
@@ -39,7 +35,7 @@
     },
     "mic": {
         "index": -1,
-        "enabled": true,
+        "enabled": false,
         "threshold_db": -40,
         "sample_rate": 44100,
         "devices": []

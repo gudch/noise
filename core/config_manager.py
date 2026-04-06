@@ -12,10 +12,35 @@ class ConfigManager:
 
     def load(self):
         if os.path.exists(CONFIG_PATH):
-            with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
-                self._data = json.load(f)
+            try:
+                with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
+                    self._data = json.load(f)
+                return
+            except (json.JSONDecodeError, ValueError) as e:
+                print(f"[CONFIG] ⚠ config.json 损坏: {e}")
+                # 尝试从备份恢复
+                bak = CONFIG_PATH + ".bak"
+                if os.path.exists(bak):
+                    try:
+                        with open(bak, "r", encoding="utf-8-sig") as f:
+                            self._data = json.load(f)
+                        # 用备份覆盖损坏的文件
+                        self.save()
+                        print("[CONFIG] ✓ 已从 config.json.bak 恢复")
+                        return
+                    except Exception:
+                        pass
+                print("[CONFIG] 使用默认配置启动")
+                self._data = {}
 
     def save(self):
+        # 保存前先备份当前文件
+        if os.path.exists(CONFIG_PATH):
+            try:
+                import shutil
+                shutil.copy2(CONFIG_PATH, CONFIG_PATH + ".bak")
+            except Exception:
+                pass
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(self._data, f, ensure_ascii=False, indent=4)
 

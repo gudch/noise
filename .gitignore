@@ -6,3 +6,5 @@ __pycache__/
 *.wav
 *.bak
 .vscode/
+config.json
+data/events.db

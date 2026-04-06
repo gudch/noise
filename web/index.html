@@ -1,0 +1,721 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NoiseGuard v2 — SM-24 检波器监测</title>
+<link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://unpkg.com/element-plus"></script>
+<script src="https://unpkg.com/@element-plus/icons-vue"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body,#app{height:100%;font-family:"Microsoft YaHei",system-ui,sans-serif}
+.layout{display:flex;height:100%;background:#f0f2f5}
+.sidebar{width:200px;background:#001529;display:flex;flex-direction:column;flex-shrink:0}
+.sidebar-logo{height:56px;display:flex;align-items:center;justify-content:center;border-bottom:1px solid rgba(255,255,255,.08)}
+.sidebar-logo span{color:#fff;font-size:17px;font-weight:700;letter-spacing:1px}
+.sidebar .el-menu{border-right:none;flex:1}
+.right-side{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.top-bar{height:56px;background:#fff;border-bottom:1px solid #e8e8e8;display:flex;align-items:center;justify-content:space-between;padding:0 20px;flex-shrink:0}
+.top-bar-left{display:flex;align-items:center;gap:16px}
+.top-bar-left .page-title{font-size:16px;font-weight:600;color:#1f2937}
+.main-content{flex:1;overflow-y:auto;padding:20px}
+.control-bar{height:64px;background:#fff;border-top:1px solid #e8e8e8;display:flex;align-items:center;padding:0 20px;gap:12px;flex-shrink:0}
+.control-bar .guide{flex:1;text-align:right;color:#8c8c8c;font-size:13px}
+
+/* 状态横幅 */
+.status-banner{border-radius:8px;padding:20px 28px;display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;position:relative;overflow:hidden}
+.status-banner.idle{background:linear-gradient(135deg,#e8eaf6,#f5f5f5);border:1px solid #d1d5db}
+.status-banner.ok{background:linear-gradient(135deg,#e8f5e9,#f1f8e9);border:1px solid #a5d6a7}
+.status-banner.warn{background:linear-gradient(135deg,#fff3e0,#fff8e1);border:1px solid #ffcc80}
+.status-banner.danger{background:linear-gradient(135deg,#ffebee,#fce4ec);border:1px solid #ef9a9a}
+.status-banner.muted{background:linear-gradient(135deg,#e3f2fd,#e8eaf6);border:1px solid #90caf9}
+.status-banner .status-icon{font-size:40px;margin-right:16px}
+.status-banner .status-info h2{font-size:22px;margin-bottom:4px}
+.status-banner .status-info p{font-size:13px;color:#666}
+.vol-section{display:flex;align-items:center;gap:16px;text-align:right}
+.vol-db{font-size:36px;font-weight:700;font-family:Consolas,monospace;line-height:1}
+.vol-label{font-size:12px;color:#8c8c8c;margin-top:2px}
+
+/* 仪表格子 */
+.dash-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.metric-card{background:#fff;border-radius:8px;padding:16px;border:1px solid #e8e8e8}
+.metric-card .mc-label{font-size:12px;color:#8c8c8c;display:flex;align-items:center;gap:4px;margin-bottom:8px}
+.metric-card .mc-label .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.metric-card .mc-value{font-size:28px;font-weight:700;font-family:Consolas,monospace}
+.metric-card .mc-sub{font-size:11px;color:#bfbfbf;margin-top:4px}
+
+/* 图表 */
+.chart-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
+.chart-card{background:#fff;border-radius:8px;border:1px solid #e8e8e8;padding:14px;overflow:hidden}
+.chart-card .chart-wrap{position:relative;height:160px}
+.chart-card canvas{position:absolute;left:0;top:0;width:100%!important;height:100%!important}
+.chart-card .cc-title{font-size:13px;color:#595959;margin-bottom:10px;font-weight:500}
+
+/* 设置 */
+.settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.setting-section{background:#fff;border-radius:8px;border:1px solid #e8e8e8;padding:20px;margin-bottom:16px}
+.setting-section h3{font-size:15px;margin-bottom:6px}
+.setting-section .desc{font-size:12px;color:#8c8c8c;margin-bottom:16px}
+
+/* 事件日志 */
+.log-card{background:#fff;border-radius:8px;border:1px solid #e8e8e8;padding:16px}
+</style>
+</head>
+<body>
+<div id="app">
+<div class="layout">
+
+  <!-- 侧边栏 -->
+  <div class="sidebar">
+    <div class="sidebar-logo"><span>📡 NoiseGuard</span></div>
+    <el-menu :default-active="tab" background-color="#001529" text-color="#ffffffa6"
+      active-text-color="#fff" @select="v=>{tab=v}">
+      <el-menu-item index="monitor"><el-icon><Monitor/></el-icon><span>实时监控</span></el-menu-item>
+      <el-menu-item index="log"><el-icon><List/></el-icon><span>事件日志</span></el-menu-item>
+      <el-menu-item index="stats"><el-icon><data-line/></el-icon><span>统计分析</span></el-menu-item>
+      <el-menu-item index="settings"><el-icon><Setting/></el-icon><span>系统设置</span></el-menu-item>
+    </el-menu>
+  </div>
+
+  <div class="right-side">
+    <!-- 顶栏 -->
+    <div class="top-bar">
+      <div class="top-bar-left">
+        <span class="page-title">{{ {monitor:'实时监控',log:'事件日志',stats:'统计分析',settings:'系统设置'}[tab] }}</span>
+        <el-tag v-if="monitoring" type="success" effect="dark" size="small">● 监控中</el-tag>
+        <el-tag v-else type="info" size="small">○ 已停止</el-tag>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px">
+        <el-tag v-if="stats.count>0" type="warning" size="small">今日 {{stats.count}} 次</el-tag>
+      </div>
+    </div>
+
+    <!-- 主内容 -->
+    <div class="main-content">
+
+      <!-- ════════ 监控页 ════════ -->
+      <div v-if="tab==='monitor'">
+        <!-- 状态横幅 -->
+        <div class="status-banner" :class="bannerClass">
+          <div style="display:flex;align-items:center">
+            <span class="status-icon">{{ statusIcon }}</span>
+            <div class="status-info">
+              <h2 :style="{color:statusColor}">{{ statusText }}</h2>
+              <p>{{ statusDetail }}</p>
+              <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+                <el-tag v-if="cls==='impact'" type="danger" effect="dark" size="small">💥 冲击</el-tag>
+                <el-tag v-else-if="cls==='step'" type="warning" effect="dark" size="small">👣 脚步</el-tag>
+                <el-tag v-else-if="cls==='drag'" type="warning" size="small">🪑 拖拽</el-tag>
+                <el-tag v-else-if="cls==='rumble'" type="info" size="small">🔊 共振</el-tag>
+                <el-tag v-if="frame.sta_lta>3" type="danger" size="small">⚡ STA/LTA {{frame.sta_lta}}</el-tag>
+                <el-tag v-if="frame.periodicity>0.3" type="warning" size="small">🚶 周期 {{frame.periodicity}}</el-tag>
+                <el-tag v-if="frame.mic_enabled && frame.mic_spike" type="danger" size="small">🎙️ 自家活动 {{frame.mic_rms_db}}dB</el-tag>
+                <el-tag v-else-if="frame.mic_enabled && frame.mic_active" type="success" size="small">🎙️ 室内背景 {{frame.mic_rms_db}}dB</el-tag>
+                <el-tag v-else-if="frame.mic_enabled && !frame.mic_active" size="small">🎙️ 室内安静</el-tag>
+              </div>
+            </div>
+          </div>
+          <div class="vol-section">
+            <div>
+              <div class="vol-db" :style="{color:statusColor}">{{ frame.rms_db ?? '—' }}</div>
+              <div class="vol-label">振动强度 (dB)</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 指标卡 -->
+        <div class="dash-grid">
+          <div class="metric-card">
+            <div class="mc-label"><span class="dot" :style="{background:frame.excess_db>8?'#f56c6c':frame.excess_db>3?'#e6a23c':'#67c23a'}"></span> 超出底噪</div>
+            <div class="mc-value" :style="{color:frame.excess_db>8?'#f56c6c':frame.excess_db>3?'#e6a23c':'#67c23a'}">{{ frame.excess_db ?? 0 }} dB</div>
+            <div class="mc-sub">底噪 {{ frame.noise_floor_db ?? '—' }} dB</div>
+          </div>
+          <div class="metric-card">
+            <div class="mc-label"><span class="dot" :style="{background:frame.crest>6?'#f56c6c':frame.crest>3?'#e6a23c':'#67c23a'}"></span> 波峰因子</div>
+            <div class="mc-value" :style="{color:frame.crest>6?'#f56c6c':frame.crest>3?'#e6a23c':'#67c23a'}">{{ frame.crest ?? 0 }}</div>
+            <div class="mc-sub">&gt;6 冲击 · 3~6 脚步 · &lt;3 持续</div>
+          </div>
+          <div class="metric-card">
+            <div class="mc-label"><span class="dot" :style="{background:frame.sta_lta>4?'#f56c6c':frame.sta_lta>2?'#e6a23c':'#67c23a'}"></span> STA/LTA</div>
+            <div class="mc-value" :style="{color:frame.sta_lta>4?'#f56c6c':frame.sta_lta>2?'#e6a23c':'#67c23a'}">{{ frame.sta_lta ?? 0 }}</div>
+            <div class="mc-sub">地震检测比 · &gt;3 触发</div>
+          </div>
+          <div class="metric-card">
+            <div class="mc-label"><span class="dot" :style="{background:frame.periodicity>0.4?'#e6a23c':'#67c23a'}"></span> 步态周期性</div>
+            <div class="mc-value" :style="{color:frame.periodicity>0.4?'#e6a23c':'#67c23a'}">{{ frame.periodicity ?? 0 }}</div>
+            <div class="mc-sub">&gt;0.3 走路 · 0 单次撞击</div>
+          </div>
+          <div class="metric-card">
+            <div class="mc-label"><span class="dot" :style="{background:(frame.kurtosis??3)>8?'#f56c6c':(frame.kurtosis??3)>5?'#e6a23c':'#67c23a'}"></span> 峰度(Kurtosis)</div>
+            <div class="mc-value" :style="{color:(frame.kurtosis??3)>8?'#f56c6c':(frame.kurtosis??3)>5?'#e6a23c':'#67c23a'}">{{ frame.kurtosis ?? 3.0 }}</div>
+            <div class="mc-sub">&gt;6 真实冲击 · 3~4 噪声 · &lt;3 干扰</div>
+          </div>
+        </div>
+
+        <!-- 频带能量 -->
+        <div class="dash-grid" style="grid-template-columns:repeat(3,1fr)">
+          <div class="metric-card">
+            <div class="mc-label"><span class="dot" style="background:#f56c6c"></span> 5-40Hz 超低频</div>
+            <div class="mc-value" style="font-size:22px">{{ frame.sub_db ?? '—' }} dB</div>
+            <div class="mc-sub">楼板共振/重击 · 占比 {{ Math.round((frame.sub_ratio??0)*100) }}%</div>
+          </div>
+          <div class="metric-card">
+            <div class="mc-label"><span class="dot" style="background:#e6a23c"></span> 40-120Hz 低频</div>
+            <div class="mc-value" style="font-size:22px">{{ frame.low_db ?? '—' }} dB</div>
+            <div class="mc-sub">脚步/拖鞋 · 占比 {{ Math.round((frame.low_ratio??0)*100) }}%</div>
+          </div>
+          <div class="metric-card">
+            <div class="mc-label"><span class="dot" style="background:#409eff"></span> 120-250Hz 中频</div>
+            <div class="mc-value" style="font-size:22px">{{ frame.mid_db ?? '—' }} dB</div>
+            <div class="mc-sub">拖拽/摩擦 · 占比 {{ Math.round((frame.mid_ratio??0)*100) }}%</div>
+          </div>
+        </div>
+
+        <!-- 图表 -->
+        <div class="chart-row">
+          <div class="chart-card">
+            <div class="cc-title">📈 振动波形 (实时)</div>
+            <div class="chart-wrap"><canvas ref="waveCanvas"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <div class="cc-title">📊 振动频谱 (5-300Hz)</div>
+            <div class="chart-wrap"><canvas ref="specCanvas"></canvas></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ════════ 日志页 ════════ -->
+      <div v-if="tab==='log'">
+        <div class="log-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <h3>今日事件</h3>
+            <el-button size="small" @click="loadEvents">刷新</el-button>
+          </div>
+          <el-table :data="events" stripe size="small" empty-text="今日暂无事件">
+            <el-table-column label="时间" width="100" :formatter="(r)=>fmtTime(r.start_time)"/>
+            <el-table-column label="类型" width="120">
+              <template #default="{row}">
+                <el-tag :type="row.source==='impact'?'danger':row.source==='step'?'warning':'info'" size="small">
+                  {{ {impact:'💥 冲击',step:'👣 脚步',drag:'🪑 拖拽',rumble:'🔊 共振'}[row.source]||row.source }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="时长" width="80" :formatter="(r)=>r.duration.toFixed(1)+'s'"/>
+            <el-table-column label="峰值" width="80" :formatter="(r)=>r.peak_db.toFixed(1)+'dB'"/>
+            <el-table-column label="录音">
+              <template #default="{row}">
+                <el-button v-if="row.recording_path" size="small" link type="primary"
+                  @click="playRec(row.recording_path)">▶ 播放</el-button>
+                <span v-else style="color:#ccc">—</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </div>
+
+      <!-- ════════ 统计页 ════════ -->
+      <div v-if="tab==='stats'">
+        <div class="chart-row">
+          <div class="chart-card">
+            <div class="cc-title">📅 近7日事件数</div>
+            <div class="chart-wrap" style="height:200px"><canvas ref="dailyChart"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <div class="cc-title">🕐 时段分布</div>
+            <div class="chart-wrap" style="height:200px"><canvas ref="hourlyChart"></canvas></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ════════ 设置页 ════════ -->
+      <div v-if="tab==='settings'">
+        <div class="settings-grid">
+          <div>
+            <!-- 检波器设备 -->
+            <div class="setting-section">
+              <h3>📡 SM-24 检波器</h3>
+              <div class="desc">选择检波器连接的声卡设备 (3.5mm 麦克风口)</div>
+              <el-form label-position="top" size="default">
+                <el-form-item label="设备">
+                  <div style="display:flex;gap:8px;width:100%">
+                    <el-select v-model="selDevice" style="flex:1" placeholder="选择设备" @change="switchDevice">
+                      <el-option v-for="d in devices" :key="d.index" :value="d.index"
+                        :label="d.name+' ['+d.host_api+'] '+d.sample_rate+'Hz'" />
+                    </el-select>
+                    <el-button @click="loadDevices" :icon="Refresh" circle title="刷新设备列表"/>
+                  </div>
+                </el-form-item>
+                <el-form-item>
+                  <el-button type="primary" @click="testDev" :loading="testing" plain>试听 3 秒</el-button>
+                  <el-button v-if="testOk" @click="playTest" plain size="small">▶ 播放</el-button>
+                  <span style="margin-left:10px;font-size:13px" :style="{color:testOk?'#67c23a':'#8c8c8c'}">{{ testMsg }}</span>
+                </el-form-item>
+              </el-form>
+            </div>
+
+            <!-- 会议麦 -->
+            <div class="setting-section">
+              <h3>🎙️ 会议麦 (室内声源过滤)</h3>
+              <div class="desc">当室内有说话/活动声时，自动抑制检波器误报</div>
+              <el-form label-position="top" size="default">
+                <el-form-item><el-switch v-model="micEnabled" active-text="开启" inactive-text="关闭" /></el-form-item>
+                <el-form-item v-if="micEnabled" label="麦克风设备">
+                  <div style="display:flex;gap:8px;width:100%">
+                    <el-select v-model="micDevice" style="flex:1" placeholder="选择会议麦">
+                      <el-option v-for="d in devices" :key="'mic'+d.index" :value="d.index"
+                        :label="d.name+' ['+d.host_api+'] '+d.sample_rate+'Hz'" />
+                    </el-select>
+                  </div>
+                </el-form-item>
+                <el-form-item v-if="micEnabled" label="室内声音阈值 (dB) — 超过此值视为室内有声">
+                  <el-slider v-model="micThresholdDb" :min="-70" :max="-10" :step="1" show-input input-size="small" />
+                </el-form-item>
+              </el-form>
+            </div>
+
+            <!-- 录音 -->
+            <div class="setting-section">
+              <h3>💾 自动录音</h3>
+              <div class="desc">检测到振动时自动录音保存证据</div>
+              <el-form label-position="top" size="default">
+                <el-form-item><el-switch v-model="recEnabled" active-text="开启" inactive-text="关闭" /></el-form-item>
+                <el-form-item label="保留天数">
+                  <el-input-number v-model="keepDays" :min="1" :max="365" />
+                </el-form-item>
+              </el-form>
+            </div>
+          </div>
+
+          <div>
+            <!-- 检测参数 -->
+            <div class="setting-section">
+              <h3>🎛️ 检测参数</h3>
+              <div class="desc">控制振动检测灵敏度 (建议先校准底噪再调)</div>
+              <el-form label-position="top" size="default">
+                <el-form-item label="灵敏度 (超出底噪 dB)">
+                  <div style="font-size:12px;color:#8c8c8c;margin-bottom:8px">值越小越灵敏。即: 振动比底噪强多少dB才报警</div>
+                  <div style="display:flex;align-items:center;gap:16px;width:100%">
+                    <div style="flex:1">
+                      <el-slider v-model="sensitivityDb" :min="1" :max="30" :step="1"
+                        :marks="{1:'1',5:'5',10:'10',15:'15',20:'20',25:'25',30:'30'}" />
+                    </div>
+                    <el-input-number v-model="sensitivityDb" :min="1" :max="30" :step="1" size="small" style="width:120px" controls-position="right" />
+                  </div>
+                  <div style="font-size:12px;margin-top:18px;padding:8px;background:#f5f7fa;border-radius:4px">
+                    {{ sensitivityDb<=4?'🔴 极灵敏 · 轻微走动都报警':sensitivityDb<=6?'🟡 灵敏 · 正常走路触发':sensitivityDb<=10?'🟢 适中 · 只报明显动静(重走/拖家具)':sensitivityDb<=15?'🟠 宽松 · 只报较大振动(跺脚/摔东西)':sensitivityDb<=25?'🔵 很宽松 · 只报剧烈冲击':'⚪ 极宽松 · 几乎不报警' }}
+                  </div>
+                </el-form-item>
+                <el-form-item label="确认帧数 (越大越不易误报)">
+                  <el-input-number v-model="confirmFrames" :min="1" :max="10" />
+                </el-form-item>
+                <el-form-item label="冷却时间 (秒)">
+                  <el-input-number v-model="cooldownSec" :min="0.5" :max="30" :step="0.5" />
+                </el-form-item>
+              </el-form>
+            </div>
+
+            <!-- 提示音 -->
+            <div class="setting-section">
+              <h3>🔔 提示音</h3>
+              <div class="desc">检测到楼上振动时播放提醒</div>
+              <el-form label-position="top" size="default">
+                <el-form-item>
+                  <el-switch v-model="alertEnabled" active-text="开启" inactive-text="关闭" />
+                </el-form-item>
+                <el-form-item label="音效">
+                  <div style="display:flex;gap:10px;align-items:center;width:100%">
+                    <el-select v-model="alertSound" style="flex:1">
+                      <el-option v-for="a in alertSounds" :key="a.file" :value="a.file" :label="a.label" />
+                    </el-select>
+                    <el-button size="small" @click="previewAlert" plain>▶ 试听</el-button>
+                  </div>
+                </el-form-item>
+                <el-form-item label="报警间隔">
+                  <div style="display:flex;align-items:center;gap:16px;width:100%">
+                    <div style="flex:1">
+                      <el-slider v-model="alertInterval" :min="3" :max="300" :step="1"
+                        :marks="{3:'3s',30:'30s',60:'1分钟',120:'2分钟',300:'5分钟'}" />
+                    </div>
+                    <el-input-number v-model="alertInterval" :min="3" :max="300" :step="1" size="small" style="width:120px" controls-position="right" />
+                  </div>
+                  <div style="font-size:12px;color:#8c8c8c;margin-top:18px">
+                    两次报警之间最短间隔 · {{ alertInterval<=5?'🔴 非常灵敏 · 每次振动都报':alertInterval<=15?'🟡 中等 · 适合多次振动':alertInterval<=60?'🟢 适中 · 不频繁打扰':'🔵 宽松 · 持续活动偶尔提醒' }}
+                  </div>
+                </el-form-item>
+              </el-form>
+            </div>
+
+            <!-- 时段 -->
+            <div class="setting-section">
+              <h3>🕐 生效时段</h3>
+              <div class="desc">仅在指定时段内触发报警</div>
+              <el-form label-position="top" size="default">
+                <el-form-item><el-switch v-model="schedEnabled" active-text="开启" inactive-text="全天" /></el-form-item>
+                <div v-if="schedEnabled" style="display:flex;gap:12px">
+                  <el-form-item label="开始"><el-time-select v-model="schedStart" :start="'00:00'" :end="'23:30'" :step="'00:30'" /></el-form-item>
+                  <el-form-item label="结束"><el-time-select v-model="schedEnd" :start="'00:00'" :end="'23:30'" :step="'00:30'" /></el-form-item>
+                </div>
+              </el-form>
+            </div>
+          </div>
+        </div>
+
+        <div style="text-align:center;padding:16px">
+          <el-button type="primary" size="large" @click="saveSettings">💾 保存所有设置</el-button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- 底部控制栏 -->
+    <div class="control-bar">
+      <el-button :type="monitoring?'danger':'primary'" size="large" :loading="toggling"
+        @click="toggleMonitor">{{ monitoring ? '⏹ 停止监控' : '▶ 开始监控' }}</el-button>
+      <el-button @click="doCalibrate" :disabled="!monitoring" size="large">
+        🎯 校准底噪
+      </el-button>
+      <span class="guide">SM-24 检波器 · 检测楼板振动 · 自动过滤人声</span>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+const {createApp,ref,computed,watch,onMounted,onBeforeUnmount,nextTick} = Vue;
+const {Refresh,Monitor,List,DataLine,Setting} = ElementPlusIconsVue;
+
+const app = createApp({
+  setup(){
+    const tab = ref('monitor');
+    const monitoring = ref(false);
+    const frame = ref({});
+    const cls = ref('silent');
+    const events = ref([]);
+    const stats = ref({count:0,duration:0,last:''});
+
+    // 设置
+    const devices = ref([]);
+    const selDevice = ref(-1);
+    let _loadingSettings = false;
+    const testing = ref(false);
+    const testOk = ref(false);
+    const testMsg = ref('');
+    const sensitivityDb = ref(6);
+    const confirmFrames = ref(2);
+    const cooldownSec = ref(2.0);
+    const recEnabled = ref(true);
+    const keepDays = ref(30);
+    const alertEnabled = ref(true);
+    const alertSound = ref('knock.wav');
+    const alertSounds = ref([]);
+    const alertInterval = ref(10);
+    const schedEnabled = ref(false);
+    const schedStart = ref('22:00');
+    const schedEnd = ref('08:00');
+    const micEnabled = ref(false);
+    const micDevice = ref(-1);
+    const micThresholdDb = ref(-40);
+
+    // 图表 refs
+    const waveCanvas = ref(null);
+    const specCanvas = ref(null);
+    const dailyChart = ref(null);
+    const hourlyChart = ref(null);
+    let waveChartObj = null, specChartObj = null, dailyChartObj = null, hourlyChartObj = null;
+
+    // WebSocket
+    let ws = null, wsRetry = 0;
+    function connectWs(){
+      ws = new WebSocket(`ws://${location.host}/ws`);
+      ws.onmessage = e => {
+        wsRetry = 0;
+        const msg = JSON.parse(e.data);
+        if(msg.type==='idle') return;
+        monitoring.value = msg.monitoring;
+        if(msg.frame && msg.monitoring){
+          frame.value = msg.frame;
+          cls.value = msg.frame.cls || 'silent';
+          updateCharts(msg.frame);
+        }
+        if(msg.stats) stats.value = msg.stats;
+        if(msg.notifs){
+          for(const n of msg.notifs){
+            if(n.type==='event_started'){
+              playAlertIfEnabled();
+              const labels={impact:'💥 冲击(掉东西/跺脚/关门)',step:'👣 脚步(走路)',drag:'🪑 拖拽(家具)',rumble:'🔊 持续振动'};
+              ElementPlus.ElNotification({title:'🚨 检测到楼上振动',
+                message:labels[n.data.cls]||n.data.cls,
+                type:'warning',duration:5000});
+            }
+            if(n.type==='event_ended'){
+              if(tab.value==='log') loadEvents();
+            }
+          }
+        }
+      };
+      ws.onerror = () => { console.warn('WebSocket error'); };
+      ws.onclose = () => { setTimeout(connectWs, Math.min(++wsRetry*1000, 10000)); };
+    }
+
+    // 提示音播放
+    let alertAudio = null;
+    let lastAlertTime = 0;
+    function playAlertIfEnabled(){
+      if(!alertEnabled.value) return;
+      const now = Date.now();
+      if(now - lastAlertTime < alertInterval.value * 1000) return;
+      lastAlertTime = now;
+      const url = `/api/alert-sound/${alertSound.value}`;
+      alertAudio = new Audio(url + '?t=' + now);
+      alertAudio.play().catch(()=>{});
+    }
+
+    // 状态计算
+    const bannerClass = computed(()=>{
+      if(!monitoring.value) return 'idle';
+      const s = frame.value.state;
+      if(s==='muted') return 'muted';
+      if(s==='calibrating') return 'idle';
+      const c = cls.value;
+      if(c==='impact') return 'danger';
+      if(c==='step'||c==='drag'||c==='rumble') return 'warn';
+      return 'ok';
+    });
+    const statusIcon = computed(()=>{
+      if(!monitoring.value) return '⏸️';
+      const s = frame.value.state;
+      if(s==='muted') return '🔇';
+      if(s==='calibrating') return '🎯';
+      const m = {impact:'💥',step:'👣',drag:'🪑',rumble:'🔊',silent:'✅'};
+      return m[cls.value]||'✅';
+    });
+    const statusText = computed(()=>{
+      if(!monitoring.value) return '监控未启动';
+      const s = frame.value.state;
+      if(s==='muted') return '报警静默中';
+      if(s==='calibrating') return '校准中...';
+      return frame.value.cls_label || '安静';
+    });
+    const statusColor = computed(()=>{
+      if(!monitoring.value) return '#8c8c8c';
+      const s = frame.value.state;
+      if(s==='muted') return '#42a5f5';
+      const m = {impact:'#f56c6c',step:'#e6a23c',drag:'#e6a23c',rumble:'#909399',silent:'#67c23a'};
+      return m[cls.value] || '#67c23a';
+    });
+    const statusDetail = computed(()=>{
+      if(!monitoring.value) return '点击底部按钮开始监控';
+      const f = frame.value;
+      if(f.state==='muted'){
+        const rem = f.alert_mute_remaining || 0;
+        return `已报警，${Math.ceil(rem)}秒后恢复报警`;
+      }
+      if(f.state==='calibrating') return '请保持安静...';
+      if(cls.value==='silent') return `SM-24 检波器运行中 · 底噪 ${f.noise_floor_db??'—'}dB · 灵敏度 ${f.sensitivity_db??'—'}dB`;
+      return `超出底噪 ${f.excess_db??0}dB · 波峰 ${f.crest??0} · STA/LTA ${f.sta_lta??0} · 峰度 ${f.kurtosis??3.0}`;
+    });
+
+    // 图表
+    function updateCharts(f){
+      // 波形
+      if(waveCanvas.value && f.waveform){
+        if(!waveChartObj){
+          waveChartObj = new Chart(waveCanvas.value, {type:'line',
+            data:{labels:[], datasets:[{data:[],borderColor:'#409eff',borderWidth:1,pointRadius:0,fill:false}]},
+            options:{animation:false,responsive:true,maintainAspectRatio:false,
+              plugins:{legend:{display:false}},
+              scales:{x:{display:false},y:{min:-0.02,max:0.02,ticks:{display:false},grid:{color:'#f0f0f0'}}}}
+          });
+        }
+        const d = f.waveform;
+        waveChartObj.data.labels = d.map((_,i)=>i);
+        waveChartObj.data.datasets[0].data = d;
+        // 动态Y轴
+        const pk = Math.max(0.002, ...d.map(Math.abs)) * 1.2;
+        waveChartObj.options.scales.y.min = -pk;
+        waveChartObj.options.scales.y.max = pk;
+        waveChartObj.update('none');
+      }
+      // 频谱
+      if(specCanvas.value && f.spec_f){
+        if(!specChartObj){
+          specChartObj = new Chart(specCanvas.value, {type:'bar',
+            data:{labels:[], datasets:[{data:[],backgroundColor:'rgba(245,108,108,0.6)',borderWidth:0}]},
+            options:{animation:false,responsive:true,maintainAspectRatio:false,
+              plugins:{legend:{display:false}},
+              scales:{x:{title:{display:true,text:'Hz',font:{size:10}},ticks:{maxTicksLimit:12,font:{size:9}}},
+                      y:{min:-120,max:-20,title:{display:true,text:'dB',font:{size:10}}}}}
+          });
+        }
+        specChartObj.data.labels = f.spec_f;
+        specChartObj.data.datasets[0].data = f.spec_db;
+        specChartObj.update('none');
+      }
+    }
+
+    // API
+    const toggling = ref(false);
+    async function toggleMonitor(){
+      if(toggling.value) return;
+      toggling.value = true;
+      try{
+        const url = monitoring.value ? '/api/stop' : '/api/start';
+        const r = await fetch(url,{method:'POST'});
+        const d = await r.json();
+        if(!r.ok){
+          ElementPlus.ElMessage.error(d.error||'操作失败');
+          toggling.value = false;
+          return;
+        }
+        monitoring.value = d.monitoring;
+        if(!monitoring.value){ frame.value={}; cls.value='silent'; }
+      }catch(e){ ElementPlus.ElMessage.error('网络错误: '+e.message); }
+      toggling.value = false;
+    }
+    async function doCalibrate(){
+      try{
+        const r=await fetch('/api/calibrate',{method:'POST'});
+        const d=await r.json();
+        if(d.error) ElementPlus.ElMessage.error(d.error);
+        else if(d.cancelled) ElementPlus.ElMessage.warning('已取消校准');
+        else ElementPlus.ElMessage.info('校准中，请保持安静...');
+      }catch(e){ ElementPlus.ElMessage.error('校准请求失败'); }
+    }
+    async function loadDevices(){ try{ const r=await fetch('/api/devices'); devices.value=await r.json(); }catch(e){ console.warn('loadDevices failed',e); } }
+    async function loadEvents(){ try{ const r=await fetch('/api/events'); events.value=await r.json(); }catch(e){ console.warn('loadEvents failed',e); } }
+    async function loadAlerts(){ try{ const r=await fetch('/api/alerts'); alertSounds.value=await r.json(); }catch(e){ console.warn('loadAlerts failed',e); } }
+    async function loadSettings(){
+      try{
+        const r=await fetch('/api/settings'); const s=await r.json();
+        _loadingSettings=true;
+        selDevice.value=s.device?.index??-1;
+        sensitivityDb.value=s.detection?.sensitivity_db??6;
+        confirmFrames.value=s.detection?.confirm_frames??2;
+        cooldownSec.value=s.detection?.cooldown_seconds??2.0;
+        recEnabled.value=s.recording?.enabled??true;
+        keepDays.value=s.recording?.max_keep_days??30;
+        alertEnabled.value=s.alert?.enabled??true;
+        alertSound.value=s.alert?.sound??'knock.wav';
+        alertInterval.value=s.alert?.min_interval_seconds??10;
+        schedEnabled.value=s.schedule?.enabled??false;
+        schedStart.value=s.schedule?.start_time??'22:00';
+        schedEnd.value=s.schedule?.end_time??'08:00';
+        micEnabled.value=s.mic?.enabled??false;
+        micDevice.value=s.mic?.index??-1;
+        micThresholdDb.value=s.mic?.threshold_db??-40;
+        nextTick(()=>{ _loadingSettings=false; });
+      }catch(e){ _loadingSettings=false; console.warn('loadSettings failed',e); }
+    }
+    async function switchDevice(idx){
+      if(_loadingSettings) return;
+      try{
+        const r=await fetch('/api/switch-device',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({device_index:idx})});
+        const d=await r.json();
+        if(d.ok) ElementPlus.ElMessage.success('设备已切换');
+        else ElementPlus.ElMessage.error(d.error||'切换失败');
+      }catch(e){ ElementPlus.ElMessage.error('切换失败'); }
+    }
+    async function testDev(){
+      testing.value=true; testOk.value=false; testMsg.value='录音中...';
+      try{
+        const r=await fetch('/api/test-device',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({device_index:selDevice.value})});
+        const d=await r.json();
+        if(d.ok){ testOk.value=true; testMsg.value=`✅ RMS=${d.rms_db}dB peak=${d.peak} ${d.device}`; }
+        else{ testMsg.value='❌ '+d.error; }
+      }catch(e){ testMsg.value='❌ 请求失败'; }
+      testing.value=false;
+    }
+    function playTest(){
+      new Audio('/api/test-playback?t='+Date.now()).play().catch(()=>{});
+    }
+    function previewAlert(){
+      new Audio(`/api/alert-sound/${alertSound.value}?t=${Date.now()}`).play().catch(()=>{});
+    }
+    async function saveSettings(){
+      try{
+        const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            sensitivity_db:sensitivityDb.value, confirm_frames:confirmFrames.value,
+            cooldown_seconds:cooldownSec.value, recording_enabled:recEnabled.value,
+            keep_days:keepDays.value, device_index:selDevice.value,
+            alert_enabled:alertEnabled.value, alert_sound:alertSound.value,
+            alert_interval:alertInterval.value,
+            schedule_enabled:schedEnabled.value, schedule_start:schedStart.value, schedule_end:schedEnd.value,
+            mic_enabled:micEnabled.value, mic_index:micDevice.value, mic_threshold_db:micThresholdDb.value,
+          })});
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        ElementPlus.ElMessage.success('设置已保存');
+      }catch(e){ ElementPlus.ElMessage.error('保存失败: '+e.message); }
+    }
+    function playRec(name){ new Audio(`/api/recording/${name}?t=${Date.now()}`).play().catch(()=>{}); }
+    function fmtTime(ts){ return new Date(ts*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
+
+    // 统计图表
+    async function loadStatsCharts(){
+      try{
+      const [dr, hr] = await Promise.all([fetch('/api/stats/daily').then(r=>r.json()), fetch('/api/stats/hourly').then(r=>r.json())]);
+      if(dailyChart.value){
+        if(dailyChartObj) dailyChartObj.destroy();
+        dailyChartObj = new Chart(dailyChart.value, {type:'bar',
+          data:{labels:dr.map(d=>d.date.slice(5)).reverse(),datasets:[{label:'事件数',data:dr.map(d=>d.count).reverse(),backgroundColor:'#f56c6c'}]},
+          options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
+      }
+      if(hourlyChart.value){
+        if(hourlyChartObj) hourlyChartObj.destroy();
+        hourlyChartObj = new Chart(hourlyChart.value, {type:'bar',
+          data:{labels:hr.map((_,i)=>i+'时'),datasets:[{label:'次数',data:hr,backgroundColor:'#e6a23c'}]},
+          options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
+      }
+      }catch(e){ console.warn('loadStatsCharts failed',e); }
+    }
+
+    // Tab 切换 — v-if 会销毁 DOM，需重建图表
+    watch(tab, (v, old)=>{
+      // 离开 monitor 时销毁实时图表
+      if(old==='monitor'){ 
+        if(waveChartObj){waveChartObj.destroy();waveChartObj=null;}
+        if(specChartObj){specChartObj.destroy();specChartObj=null;}
+      }
+      // 离开 stats 时销毁统计图表 (v-if 销毁 canvas, 必须同步清理 Chart 对象)
+      if(old==='stats'){
+        if(dailyChartObj){dailyChartObj.destroy();dailyChartObj=null;}
+        if(hourlyChartObj){hourlyChartObj.destroy();hourlyChartObj=null;}
+      }
+      if(v==='settings'){loadDevices().then(()=>loadSettings());loadAlerts();}
+      if(v==='log') loadEvents();
+      if(v==='stats') nextTick(()=>loadStatsCharts());
+    });
+
+    onMounted(()=>{
+      connectWs();
+      fetch('/api/status').then(r=>r.json()).then(d=>{ monitoring.value=d.monitoring; }).catch(()=>{});
+      loadDevices().then(()=>loadSettings()); loadAlerts();
+    });
+
+    onBeforeUnmount(()=>{ if(ws) ws.close(); });
+
+    return {
+      tab,monitoring,frame,cls,events,stats,
+      bannerClass,statusIcon,statusText,statusColor,statusDetail,
+      devices,selDevice,testing,testOk,testMsg,
+      sensitivityDb,confirmFrames,cooldownSec,recEnabled,keepDays,
+      alertEnabled,alertSound,alertSounds,alertInterval,schedEnabled,schedStart,schedEnd,
+      micEnabled,micDevice,micThresholdDb,
+      waveCanvas,specCanvas,dailyChart,hourlyChart,
+      toggling,toggleMonitor,doCalibrate,loadDevices,switchDevice,testDev,playTest,
+      saveSettings,previewAlert,playRec,loadEvents,fmtTime,
+      Refresh,Monitor,List,DataLine,Setting,
+    };
+  }
+});
+app.use(ElementPlus);
+for(const [k,v] of Object.entries(ElementPlusIconsVue)){app.component(k,v);}
+app.mount('#app');
+</script>
+</body>
+</html>

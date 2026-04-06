@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NoiseGuard — 楼上噪音监测</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script>
+tailwind.config = {
+  theme: { extend: { fontFamily: { sans: ['"Microsoft YaHei"', '"PingFang SC"', 'system-ui', 'sans-serif'] } } }
+}
+</script>
+<style>
+body { background: #060611; }
+@keyframes pulse-ring { 0% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); } 70% { box-shadow: 0 0 0 12px rgba(239,68,68,0); } 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); } }
+.pulse-danger { animation: pulse-ring 1.5s infinite; }
+canvas { display: block; border-radius: 8px; }
+input[type=range] { -webkit-appearance: none; height: 6px; background: #334155; border-radius: 4px; outline: none; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; background: #6366f1; border-radius: 50%; cursor: pointer; }
+select, input[type=number] { background: #0f172a; border: 1px solid #1e293b; color: #e2e8f0; border-radius: 8px; padding: 8px 12px; }
+::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="app" class="min-h-screen text-slate-200 pb-36">
+<!-- ═════ 顶部栏 ═════ -->
+<header class="sticky top-0 z-50 bg-[#060611]/90 backdrop-blur border-b border-slate-800/50 px-6 py-3 flex items-center justify-between">
+  <div class="flex items-center gap-3">
+    <span class="text-xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">NoiseGuard</span>
+    <span class="text-slate-500 text-sm hidden sm:inline">楼上噪音监测助手</span>
+  </div>
+  <div class="flex items-center gap-2 text-sm">
+    <span :class="connected ? 'bg-emerald-500' : 'bg-red-500'" class="w-2 h-2 rounded-full inline-block"></span>
+    <span class="text-slate-400">{{ connected ? '已连接' : '未连接' }}</span>
+  </div>
+</header>
+
+<!-- ═════ 引导横幅 ═════ -->
+<div v-if="guideText" class="mx-4 mt-3 px-5 py-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-300 text-sm font-medium">
+  {{ guideText }}
+</div>
+
+<!-- ═════ 标签页导航 ═════ -->
+<nav class="flex gap-1 px-4 mt-3">
+  <button v-for="t in tabs" :key="t.id" @click="tab = t.id"
+    :class="[tab === t.id ? 'bg-slate-800 text-white border-b-2 border-indigo-500' : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/50']"
+    class="px-5 py-2.5 rounded-t-lg text-sm font-bold transition-all">
+    {{ t.icon }} {{ t.label }}
+  </button>
+</nav>
+
+<!-- ═════ 页面内容 ═════ -->
+<main class="px-4 mt-2">
+
+<!-- ────── 实时监控 ────── -->
+<div v-show="tab==='monitor'">
+  <!-- 状态卡片 -->
+  <div :class="statusCardClass" class="rounded-2xl p-5 mb-3 transition-all duration-700">
+    <div class="flex items-center gap-5">
+      <span :class="classification==='upstairs' && monitoring ? 'pulse-danger' : ''" class="text-5xl rounded-full">{{ statusIcon }}</span>
+      <div class="flex-1 min-w-0">
+        <div class="text-3xl font-bold" :style="{color: statusColor}">{{ statusText }}</div>
+        <div class="text-slate-400 text-sm mt-1">{{ statusDetail }}</div>
+      </div>
+      <div class="text-center shrink-0">
+        <div class="text-slate-500 text-xs">当前音量</div>
+        <div class="text-2xl font-mono font-bold" :style="{color: volColor}">{{ rmsDb }} dB</div>
+        <div class="w-32 h-2 bg-slate-700 rounded-full mt-2 overflow-hidden"><div class="h-full rounded-full transition-all duration-150" :style="{width: volWidth, background: volColor}"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 四格指标 -->
+  <div class="grid grid-cols-4 gap-2.5 mb-3">
+    <div class="bg-slate-800/60 border-l-4 border-red-500 rounded-xl p-3.5">
+      <div class="text-red-400 text-xs font-bold">🔴 楼上动静</div>
+      <div class="text-red-400 text-2xl font-mono font-bold mt-1">{{ lowDb }}</div>
+      <div class="text-slate-600 text-[11px] mt-0.5">低频 20-200Hz</div>
+    </div>
+    <div class="bg-slate-800/60 border-l-4 border-blue-500 rounded-xl p-3.5">
+      <div class="text-blue-400 text-xs font-bold">🔵 说话/电视</div>
+      <div class="text-blue-400 text-2xl font-mono font-bold mt-1">{{ midDb }}</div>
+      <div class="text-slate-600 text-[11px] mt-0.5">中频 200-2kHz</div>
+    </div>
+    <div class="bg-slate-800/60 border-l-4 border-emerald-500 rounded-xl p-3.5">
+      <div class="text-emerald-400 text-xs font-bold">🟢 细碎声音</div>
+      <div class="text-emerald-400 text-2xl font-mono font-bold mt-1">{{ highDb }}</div>
+      <div class="text-slate-600 text-[11px] mt-0.5">高频 2kHz+</div>
+    </div>
+    <div class="bg-slate-800/60 border-l-4 border-amber-500 rounded-xl p-3.5">
+      <div class="text-amber-400 text-xs font-bold">⚡ 楼上可疑度</div>
+      <div class="text-amber-400 text-2xl font-mono font-bold mt-1">{{ ratio }}</div>
+      <div class="text-slate-600 text-[11px] mt-0.5">超过2.0自动标记</div>
+    </div>
+  </div>
+
+  <!-- 波形 -->
+  <div class="bg-slate-900/60 rounded-xl p-3 mb-2.5">
+    <div class="text-slate-500 text-xs mb-1.5">🎵 实时声音波形 — 声音越大，波浪越高</div>
+    <canvas ref="waveCanvas" class="w-full" style="height:90px"></canvas>
+  </div>
+  <!-- 频谱 -->
+  <div class="bg-slate-900/60 rounded-xl p-3 mb-2.5">
+    <div class="flex items-center gap-4 text-xs mb-1.5">
+      <span class="text-slate-500">📊 频率分析</span>
+      <span class="text-red-400/70">◆ 红色区域 = 楼上频段</span>
+      <span class="text-blue-400/70">◆ 蓝色曲线 = 当前声音</span>
+    </div>
+    <canvas ref="specCanvas" class="w-full" style="height:110px"></canvas>
+  </div>
+
+  <!-- 今日统计 -->
+  <div class="bg-slate-800/50 rounded-xl p-4 flex items-center gap-10">
+    <div><div class="text-slate-500 text-xs">今天检测到噪音</div><div class="text-2xl font-bold text-red-400">{{ todayCount }} 次</div></div>
+    <div><div class="text-slate-500 text-xs">累计吵了多久</div><div class="text-2xl font-bold text-amber-400">{{ todayDuration }} 分钟</div></div>
+    <div><div class="text-slate-500 text-xs">最近一次</div><div class="text-lg font-bold text-slate-300">{{ todayLast || '暂无' }}</div></div>
+  </div>
+</div>
+
+<!-- ────── 噪音记录 ────── -->
+<div v-show="tab==='log'">
+  <div class="bg-slate-800/40 rounded-xl p-3 mb-3 text-sm text-slate-400">
+    💡 这里显示今天所有检测到的楼上噪音事件。点 ▶ 按钮就可以听当时录下来的声音。
+  </div>
+  <div class="overflow-auto rounded-xl border border-slate-800">
+    <table class="w-full text-sm">
+      <thead><tr class="text-slate-400 bg-slate-800/80 text-left">
+        <th class="p-3">发生时间</th><th class="p-3">吵了多久</th><th class="p-3">最大音量</th>
+        <th class="p-3">可疑程度</th><th class="p-3">判定</th><th class="p-3 w-24">回放</th>
+      </tr></thead>
+      <tbody>
+        <tr v-for="(ev,i) in events" :key="i" class="border-t border-slate-800/50 hover:bg-slate-800/40 transition-colors">
+          <td class="p-3 text-slate-300">{{ fmtTime(ev.start_time) }}</td>
+          <td class="p-3">{{ ev.duration.toFixed(1) }} 秒</td>
+          <td class="p-3">{{ ev.peak_db.toFixed(1) }} dB</td>
+          <td class="p-3">{{ ev.peak_ratio.toFixed(2) }}</td>
+          <td class="p-3"><span :class="ev.source==='upstairs'?'text-red-400':'text-slate-400'">{{ ev.source==='upstairs'?'🔴 楼上':'🟡 其他' }}</span></td>
+          <td class="p-3">
+            <button v-if="ev.recording_path" @click="playRec(ev.recording_path)"
+              class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3 py-1.5 rounded-lg font-bold transition-colors">▶ 播放</button>
+            <span v-else class="text-slate-600">—</span>
+          </td>
+        </tr>
+        <tr v-if="events.length===0"><td colspan="6" class="p-8 text-center text-slate-600">今天还没有检测到噪音事件</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="text-slate-600 text-xs mt-2">💡 录音文件保存在 recordings 文件夹，也可以用播放器直接打开</div>
+</div>
+
+<!-- ────── 统计报表 ────── -->
+<div v-show="tab==='stats'">
+  <div class="bg-slate-800/40 rounded-xl p-3 mb-3 text-sm text-slate-400">
+    💡 最近一周的噪音统计，帮你了解楼上什么时候最吵。
+  </div>
+  <div class="bg-slate-900/60 rounded-xl p-4 mb-3">
+    <h3 class="text-slate-400 text-sm mb-2">📅 最近 7 天楼上吵了几次？</h3>
+    <div style="height:200px"><canvas ref="dailyChart"></canvas></div>
+  </div>
+  <div class="bg-slate-900/60 rounded-xl p-4">
+    <h3 class="text-slate-400 text-sm mb-2">🕐 一天中哪个时段最吵？（最近 7 天汇总）</h3>
+    <div style="height:200px"><canvas ref="hourlyChart"></canvas></div>
+  </div>
+</div>
+
+<!-- ────── 设置 ────── -->
+<div v-show="tab==='settings'" class="max-w-3xl space-y-3">
+  <!-- 麦克风 -->
+  <div class="bg-slate-900/60 rounded-xl p-5">
+    <h3 class="text-base font-bold mb-2">🎤 选择你的麦克风</h3>
+    <div class="text-xs text-slate-400 bg-slate-800/60 rounded-lg p-3 mb-3">
+      💡 选择放在桌上的那个麦克风（如 ERAZER），然后点「试听」确认能正常收音
+    </div>
+    <select v-model="selDevice" class="w-full mb-3 text-sm">
+      <option v-for="d in devices" :key="d.index" :value="d.index">{{ d.name }} [{{ d.host_api }}] {{ d.sample_rate }}Hz</option>
+    </select>
+    <div class="flex items-center gap-3">
+      <button @click="testDev" :disabled="testing" class="bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 text-white text-sm px-4 py-2 rounded-lg font-bold transition-colors">
+        {{ testing ? '录制中...' : '🔊 试听 3 秒' }}
+      </button>
+      <span class="text-sm" :class="testOk ? 'text-emerald-400' : 'text-slate-400'">{{ testMsg }}</span>
+    </div>
+  </div>
+
+  <!-- 灵敏度 -->
+  <div class="bg-slate-900/60 rounded-xl p-5">
+    <h3 class="text-base font-bold mb-2">🎚️ 灵敏度 — 多大声才算噪音？</h3>
+    <div class="text-xs text-slate-400 bg-slate-800/60 rounded-lg p-3 mb-3">
+      💡 经常误报就调低灵敏度；楼上有动静没检测到就调高。校准后一般不需要手动调。
+    </div>
+    <div class="space-y-4">
+      <div>
+        <div class="flex justify-between text-sm mb-1"><span>多安静算「没声音」</span><span class="font-mono text-indigo-400">{{ silenceDb }} dB</span></div>
+        <input type="range" v-model.number="silenceDb" min="-80" max="-30" class="w-full">
+        <div class="flex justify-between text-[11px] text-slate-600 mt-0.5"><span>← 更灵敏（容易误报）</span><span>不太灵敏 →</span></div>
+      </div>
+      <div>
+        <div class="flex justify-between text-sm mb-1"><span>多大算「楼上噪音」</span><span class="font-mono text-indigo-400">{{ ratioTh.toFixed(1) }}</span></div>
+        <input type="range" v-model.number="ratioTh" min="1" max="5" step="0.1" class="w-full">
+        <div class="flex justify-between text-[11px] text-slate-600 mt-0.5"><span>← 容易判定为楼上</span><span>不容易判定 →</span></div>
+      </div>
+      <div class="flex items-center gap-3 text-sm">
+        <span>听到几次才确认：</span>
+        <input type="number" v-model.number="confirmFrames" min="1" max="10" class="w-20 text-center text-sm">
+        <span class="text-slate-500">次 （数字越大越不容易误报）</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 录音 -->
+  <div class="bg-slate-900/60 rounded-xl p-5">
+    <h3 class="text-base font-bold mb-2">💾 录音 — 自动保存噪音证据</h3>
+    <div class="text-xs text-slate-400 bg-slate-800/60 rounded-lg p-3 mb-3">
+      💡 开启后每次检测到噪音都会自动录音，在「噪音记录」页面可以听回放。
+    </div>
+    <label class="flex items-center gap-2 text-sm mb-3 cursor-pointer">
+      <input type="checkbox" v-model="recEnabled" class="w-5 h-5 accent-indigo-500"> 检测到噪音时自动录音
+    </label>
+    <div class="flex items-center gap-2 text-sm">
+      <span>录音保存</span>
+      <input type="number" v-model.number="keepDays" min="1" max="365" class="w-20 text-center text-sm">
+      <span>天后自动删除</span>
+    </div>
+  </div>
+
+  <!-- 校准 -->
+  <div class="bg-slate-900/60 rounded-xl p-5">
+    <h3 class="text-base font-bold mb-2">🔧 校准 — 让程序知道你家正常有多安静</h3>
+    <div class="text-xs text-slate-400 bg-slate-800/60 rounded-lg p-3 mb-3">
+      💡 第一次用必须校准！安静时（没电视没说话）点下面的按钮，程序会听 5 秒记住背景噪音。
+    </div>
+    <button @click="calibrate" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-3 rounded-xl font-bold text-sm transition-colors">
+      🔧 开始校准（需要先开始监控）
+    </button>
+    <div v-if="calMsg" class="text-sm text-emerald-400 mt-2">{{ calMsg }}</div>
+  </div>
+
+  <!-- 保存 -->
+  <button @click="saveSettings" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-3 rounded-xl font-bold transition-colors">
+    💾 保存所有设置
+  </button>
+</div>
+
+</main>
+
+<!-- ═════ 底部操作栏 ═════ -->
+<footer class="fixed bottom-0 left-0 right-0 z-50 bg-[#060611]/95 backdrop-blur border-t border-slate-800/50 px-4 py-3">
+  <div class="max-w-5xl mx-auto flex gap-3">
+    <button @click="toggleMonitoring"
+      :class="monitoring ? 'bg-red-600 hover:bg-red-500' : 'bg-emerald-600 hover:bg-emerald-500'"
+      class="flex-1 py-4 rounded-xl text-white font-bold text-lg transition-all">
+      {{ monitoring ? '⏹ 停止监控' : '🎤 开始监控' }}
+    </button>
+    <button @click="calibrate" class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-4 rounded-xl font-bold transition-colors">
+      🔧 校准
+    </button>
+    <button @click="toggleHome"
+      :class="homeActive ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-slate-700 hover:bg-slate-600'"
+      class="text-white px-6 py-4 rounded-xl font-bold transition-colors whitespace-nowrap">
+      {{ homeActive ? '🏠 活动中(取消)' : '🏠 我在家' }}
+    </button>
+  </div>
+  <div class="max-w-5xl mx-auto flex gap-3 text-[11px] text-slate-600 mt-1">
+    <span class="flex-1 text-center">第一步：让程序开始听声音</span>
+    <span class="px-6 text-center">安静时校准（只需一次）</span>
+    <span class="px-6 text-center">自己活动时打开避免误报</span>
+  </div>
+</footer>
+
+<!-- 音频播放器 -->
+<audio ref="player" class="hidden"></audio>
+
+<!-- 提示消息 -->
+<div v-if="toast" class="fixed top-16 right-4 z-[100] bg-slate-800 border border-slate-700 rounded-xl px-5 py-3 text-sm shadow-2xl transition-all"
+  :class="toast.type==='error'?'border-red-500/50 text-red-300':'border-emerald-500/50 text-emerald-300'">
+  {{ toast.msg }}
+</div>
+</div>
+
+<script>
+const { createApp, ref, computed, watch, onMounted, onUnmounted, nextTick } = Vue;
+
+createApp({
+setup() {
+  const tab = ref('monitor');
+  const tabs = [
+    { id: 'monitor', icon: '📊', label: '实时监控' },
+    { id: 'log', icon: '📋', label: '噪音记录' },
+    { id: 'stats', icon: '📈', label: '统计报表' },
+    { id: 'settings', icon: '⚙️', label: '设置' },
+  ];
+
+  // 连接 & 状态
+  const connected = ref(false);
+  const monitoring = ref(false);
+  const calibrated = ref(false);
+  const homeActive = ref(false);
+
+  // 实时数据
+  const rmsDb = ref(-80);
+  const lowDb = ref(-80);
+  const midDb = ref(-80);
+  const highDb = ref(-80);
+  const ratio = ref(0);
+  const classification = ref('silent');
+  const state = ref('silent');
+  const todayCount = ref(0);
+  const todayDuration = ref(0);
+  const todayLast = ref('');
+
+  // 其他页面
+  const events = ref([]);
+  const devices = ref([]);
+  const selDevice = ref(null);
+  const silenceDb = ref(-55);
+  const ratioTh = ref(2.0);
+  const confirmFrames = ref(3);
+  const recEnabled = ref(true);
+  const keepDays = ref(30);
+  const testing = ref(false);
+  const testMsg = ref('');
+  const testOk = ref(false);
+  const calMsg = ref('');
+  const toast = ref(null);
+
+  // Canvas refs
+  const waveCanvas = ref(null);
+  const specCanvas = ref(null);
+  const dailyChart = ref(null);
+  const hourlyChart = ref(null);
+  const player = ref(null);
+
+  let ws = null;
+  let dailyChartInst = null;
+  let hourlyChartInst = null;
+
+  // ── 计算属性 ──
+  const statusIcon = computed(() => {
+    if (!monitoring.value) return '⏸';
+    return { silent: '⚪', upstairs: '🔴', home: '🟢', unknown: '🟡' }[classification.value] || '⚪';
+  });
+  const statusText = computed(() => {
+    if (!monitoring.value) return '未启动';
+    return { silent: '楼上安静', upstairs: '楼上有动静！', home: '自家声音', unknown: '正在分析...' }[classification.value] || '楼上安静';
+  });
+  const statusColor = computed(() => {
+    if (!monitoring.value) return '#64748b';
+    return { silent: '#94a3b8', upstairs: '#ef4444', home: '#10b981', unknown: '#f59e0b' }[classification.value] || '#94a3b8';
+  });
+  const statusDetail = computed(() => {
+    if (!monitoring.value) return '点击下方绿色按钮开始监控';
+    const m = { silent: '待机监听中...', confirming: '听到可疑声音，正在确认...', active: '⚠️ 楼上噪音进行中，正在录音', cooldown: '噪音刚停，观察是否还会继续...' };
+    return m[state.value] || '监听中...';
+  });
+  const statusCardClass = computed(() => {
+    if (!monitoring.value) return 'bg-slate-900/80 ring-1 ring-slate-700/50';
+    const m = { upstairs: 'bg-gradient-to-r from-red-950/60 to-slate-900 ring-1 ring-red-500/40', home: 'bg-gradient-to-r from-emerald-950/40 to-slate-900 ring-1 ring-emerald-500/30', unknown: 'bg-gradient-to-r from-amber-950/40 to-slate-900 ring-1 ring-amber-500/30' };
+    return m[classification.value] || 'bg-slate-900/80 ring-1 ring-slate-700/50';
+  });
+  const volWidth = computed(() => Math.max(0, Math.min(100, (rmsDb.value + 80) * 100 / 60)) + '%');
+  const volColor = computed(() => rmsDb.value > -30 ? '#ef4444' : rmsDb.value > -50 ? '#f59e0b' : '#10b981');
+  const guideText = computed(() => {
+    if (!monitoring.value && !calibrated.value) return '👋 欢迎！第一步：点击下方绿色按钮「开始监控」→ 第二步：安静时点「校准」→ 然后程序自动帮你监测楼上噪音！';
+    if (!monitoring.value && calibrated.value) return '✅ 已校准！点下方绿色按钮开始监测。';
+    if (monitoring.value && !calibrated.value) return '🎤 正在听声音...请保持安静，然后点「校准」按钮。';
+    return '';
+  });
+
+  // ── WebSocket ──
+  function connectWS() {
+    const prot = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${prot}//${location.host}/ws`);
+    ws.onopen = () => { connected.value = true; };
+    ws.onclose = () => { connected.value = false; setTimeout(connectWS, 2000); };
+    ws.onerror = () => {};
+    ws.onmessage = (e) => {
+      try { handleMsg(JSON.parse(e.data)); } catch {}
+    };
+  }
+
+  function handleMsg(msg) {
+    if (msg.type === 'frame') {
+      rmsDb.value = msg.rms_db;
+      lowDb.value = msg.low_db;
+      midDb.value = msg.mid_db;
+      highDb.value = msg.high_db;
+      ratio.value = msg.ratio;
+      classification.value = msg.cls;
+      state.value = msg.state;
+      todayCount.value = msg.today_count || 0;
+      todayDuration.value = msg.today_duration || 0;
+      todayLast.value = msg.today_last || '';
+      if (tab.value === 'monitor') {
+        drawWave(msg.waveform);
+        drawSpec(msg.spec_f, msg.spec_db);
+      }
+    } else if (msg.type === 'status') {
+      monitoring.value = msg.monitoring;
+      calibrated.value = msg.calibrated;
+      homeActive.value = msg.home_active;
+    } else if (msg.type === 'calibrating') {
+      calMsg.value = `⏳ 校准中...还剩 ${msg.data.remaining} 秒，请保持安静`;
+    } else if (msg.type === 'calibrated') {
+      calibrated.value = true;
+      calMsg.value = `✅ 校准完成！背景噪音 ${msg.data.floor_db}dB，检测门限 ${msg.data.threshold_db}dB`;
+      silenceDb.value = Math.round(msg.data.threshold_db);
+      showToast('校准成功！现在开始自动监测楼上噪音', 'ok');
+    } else if (msg.type === 'event_ended') {
+      showToast(`🔴 楼上噪音结束 — 吵了 ${msg.data.duration} 秒，峰值 ${msg.data.peak_db}dB`, 'ok');
+      if (tab.value === 'log') loadEvents();
+    } else if (msg.type === 'event_started') {
+      showToast('⚠️ 检测到楼上噪音，开始录音...', 'error');
+    } else if (msg.type === 'error') {
+      showToast('❌ ' + (msg.data.message || '出错了'), 'error');
+    }
+  }
+
+  // ── API 调用 ──
+  async function toggleMonitoring() {
+    if (monitoring.value) {
+      await fetch('/api/stop', { method: 'POST' });
+      monitoring.value = false;
+    } else {
+      const r = await fetch('/api/start', { method: 'POST' });
+      const d = await r.json();
+      monitoring.value = d.monitoring;
+      if (!d.monitoring) showToast('❌ 启动失败: ' + (d.error || '检查麦克风连接'), 'error');
+    }
+  }
+  async function calibrate() {
+    if (!monitoring.value) { showToast('请先点绿色按钮「开始监控」', 'error'); return; }
+    await fetch('/api/calibrate', { method: 'POST' });
+    calMsg.value = '⏳ 校准中...请保持安静';
+  }
+  async function toggleHome() {
+    const r = await fetch('/api/home-toggle', { method: 'POST' });
+    const d = await r.json();
+    homeActive.value = d.home_active;
+  }
+  async function loadEvents() {
+    const r = await fetch('/api/events');
+    events.value = await r.json();
+  }
+  async function loadDevices() {
+    const r = await fetch('/api/devices');
+    devices.value = await r.json();
+  }
+  async function loadSettings() {
+    const r = await fetch('/api/settings');
+    const s = await r.json();
+    silenceDb.value = s.detection?.silence_threshold_db ?? -55;
+    ratioTh.value = s.detection?.ratio_threshold ?? 2.0;
+    confirmFrames.value = s.detection?.confirm_frames ?? 3;
+    recEnabled.value = s.recording?.enabled ?? true;
+    keepDays.value = s.recording?.max_keep_days ?? 30;
+    selDevice.value = s.device?.index ?? null;
+    calibrated.value = s.calibration?.calibrated ?? false;
+  }
+  async function saveSettings() {
+    await fetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        silence_threshold_db: silenceDb.value, ratio_threshold: ratioTh.value,
+        confirm_frames: confirmFrames.value, recording_enabled: recEnabled.value,
+        keep_days: keepDays.value, device_index: selDevice.value,
+      })
+    });
+    showToast('✅ 设置已保存', 'ok');
+  }
+  async function testDev() {
+    if (!selDevice.value && selDevice.value !== 0) return;
+    testing.value = true; testMsg.value = '🎤 录音中...'; testOk.value = false;
+    try {
+      const r = await fetch('/api/test-device', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_index: selDevice.value })
+      });
+      const d = await r.json();
+      if (d.ok) {
+        testMsg.value = `✅ 成功！音量 ${d.rms_db}dB`; testOk.value = true;
+        player.value.src = d.url; player.value.play();
+      } else {
+        testMsg.value = '❌ ' + (d.error || '失败');
+      }
+    } catch (e) { testMsg.value = '❌ 请求失败'; }
+    testing.value = false;
+  }
+  function playRec(path) {
+    const fn = path.replace(/\\/g, '/').split('/').pop();
+    player.value.src = `/api/recordings/${fn}`;
+    player.value.play();
+  }
+  function fmtTime(ts) {
+    const d = new Date(ts * 1000);
+    return d.toLocaleTimeString('zh-CN', { hour12: false });
+  }
+
+  // ── Canvas 绘制 ──
+  function resizeCanvas(canvas) {
+    if (!canvas) return;
+    const rect = canvas.parentElement.getBoundingClientRect();
+    canvas.width = rect.width;
+    canvas.height = parseInt(canvas.style.height) || 100;
+  }
+  function drawWave(data) {
+    const c = waveCanvas.value; if (!c || !data) return;
+    resizeCanvas(c);
+    const ctx = c.getContext('2d'), w = c.width, h = c.height;
+    ctx.clearRect(0, 0, w, h);
+    // 中线
+    ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, h/2); ctx.lineTo(w, h/2); ctx.stroke();
+    // 波形线
+    ctx.strokeStyle = '#6366f1'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < data.length; i++) {
+      const x = (i / data.length) * w, y = h/2 - data[i] * h * 0.9;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    // 渐变填充
+    ctx.lineTo(w, h/2); ctx.lineTo(0, h/2); ctx.closePath();
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, 'rgba(99,102,241,0.12)'); g.addColorStop(0.5, 'rgba(99,102,241,0.03)'); g.addColorStop(1, 'rgba(99,102,241,0.12)');
+    ctx.fillStyle = g; ctx.fill();
+  }
+  function drawSpec(freqs, dbs) {
+    const c = specCanvas.value; if (!c || !freqs || !dbs) return;
+    resizeCanvas(c);
+    const ctx = c.getContext('2d'), w = c.width, h = c.height;
+    ctx.clearRect(0, 0, w, h);
+    const logMin = Math.log10(20), logMax = Math.log10(8000);
+    // 低频高亮区
+    const lowW = ((Math.log10(200) - logMin) / (logMax - logMin)) * w;
+    ctx.fillStyle = 'rgba(239,68,68,0.07)'; ctx.fillRect(0, 0, lowW, h);
+    // 频谱线
+    ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    const dbMin = -80, dbMax = 0;
+    let started = false;
+    for (let i = 0; i < freqs.length; i++) {
+      if (freqs[i] < 20 || freqs[i] > 8000) continue;
+      const x = ((Math.log10(freqs[i]) - logMin) / (logMax - logMin)) * w;
+      const y = h - Math.max(0, Math.min(h, ((dbs[i] - dbMin) / (dbMax - dbMin)) * h));
+      started ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), started = true);
+    }
+    ctx.stroke();
+    // 填充
+    ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, 'rgba(59,130,246,0.25)'); g.addColorStop(1, 'rgba(59,130,246,0.01)');
+    ctx.fillStyle = g; ctx.fill();
+  }
+
+  // ── Chart.js ──
+  const chartOpts = {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { color: '#64748b', font: { size: 11 } }, grid: { color: '#1e293b' } },
+      y: { ticks: { color: '#64748b', font: { size: 11 } }, grid: { color: '#1e293b' }, beginAtZero: true },
+    }
+  };
+  async function loadStats() {
+    const [dr, hr] = await Promise.all([fetch('/api/stats/daily'), fetch('/api/stats/hourly')]);
+    const daily = await dr.json(), hourly = await hr.json();
+    await nextTick();
+    // Daily
+    if (dailyChartInst) dailyChartInst.destroy();
+    const dc = dailyChart.value; if (!dc) return;
+    dailyChartInst = new Chart(dc, {
+      type: 'bar',
+      data: {
+        labels: daily.map(d => d.date.slice(5)),
+        datasets: [{ data: daily.map(d => d.count), backgroundColor: '#ef4444aa', borderRadius: 6 }]
+      },
+      options: { ...chartOpts, plugins: { ...chartOpts.plugins, tooltip: { callbacks: { label: c => c.raw + ' 次' } } } }
+    });
+    // Hourly
+    if (hourlyChartInst) hourlyChartInst.destroy();
+    const hc = hourlyChart.value; if (!hc) return;
+    hourlyChartInst = new Chart(hc, {
+      type: 'bar',
+      data: {
+        labels: hourly.map((_, i) => i + ':00'),
+        datasets: [{ data: hourly, backgroundColor: '#f59e0baa', borderRadius: 4 }]
+      },
+      options: chartOpts
+    });
+  }
+
+  // ── Toast ──
+  let toastTimer = null;
+  function showToast(msg, type) {
+    toast.value = { msg, type }; clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.value = null, 5000);
+  }
+
+  // ── Tab 切换加载 ──
+  watch(tab, (v) => {
+    if (v === 'log') loadEvents();
+    if (v === 'stats') loadStats();
+    if (v === 'settings') { loadDevices(); loadSettings(); }
+  });
+
+  // ── 生命周期 ──
+  onMounted(() => {
+    connectWS();
+    loadSettings();
+    loadDevices();
+    window.addEventListener('resize', () => {
+      if (waveCanvas.value) resizeCanvas(waveCanvas.value);
+      if (specCanvas.value) resizeCanvas(specCanvas.value);
+    });
+  });
+  onUnmounted(() => { if (ws) ws.close(); });
+
+  return {
+    tab, tabs, connected, monitoring, calibrated, homeActive,
+    rmsDb, lowDb, midDb, highDb, ratio, classification, state,
+    todayCount, todayDuration, todayLast,
+    statusIcon, statusText, statusColor, statusDetail, statusCardClass, volWidth, volColor, guideText,
+    events, devices, selDevice, silenceDb, ratioTh, confirmFrames, recEnabled, keepDays,
+    testing, testMsg, testOk, calMsg, toast,
+    waveCanvas, specCanvas, dailyChart, hourlyChart, player,
+    toggleMonitoring, calibrate, toggleHome, testDev, saveSettings,
+    loadEvents, playRec, fmtTime,
+  };
+}
+}).mount('#app');
+</script>
+</body>
+</html>

@@ -1,0 +1,46 @@
+{
+    "device": {
+        "index": 1,
+        "name": "本机麦克风 (适用于数字麦克风的英特尔® 智音技术)",
+        "sample_rate": 44100,
+        "block_size": 1024
+    },
+    "detection": {
+        "sensitivity_db": 1,
+        "confirm_frames": 2,
+        "cooldown_seconds": 2.0
+    },
+    "recording": {
+        "enabled": true,
+        "pre_buffer_seconds": 3,
+        "post_buffer_seconds": 3,
+        "output_dir": "recordings",
+        "max_keep_days": 30
+    },
+    "alert": {
+        "enabled": true,
+        "sound": "knock.wav",
+        "min_interval_seconds": 3
+    },
+    "calibration": {
+        "calibrated": true,
+        "noise_floor_db": -85.04250128825872,
+        "duration_seconds": 5,
+        "noise_band_power": [
+            1e-10,
+            1e-10,
+            1e-10
+        ]
+    },
+    "schedule": {
+        "enabled": false,
+        "start_time": "22:00",
+        "end_time": "08:00"
+    },
+    "mic": {
+        "index": -1,
+        "enabled": false,
+        "threshold_db": -40,
+        "sample_rate": 44100
+    }
+}

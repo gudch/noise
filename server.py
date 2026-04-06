@@ -13,9 +13,17 @@
 4. 峰度抗干扰 (kurtosis<3.5 + 低能量 = 干扰，忽略)
 5. 百分位自适应基线 (30秒窗口第20百分位)
 """
-import asyncio, json, time, os, wave, collections, threading, math
+import asyncio, json, time, os, wave, collections, threading, math, sys
 import numpy as np
 import sounddevice as sd
+
+# 修复 Windows GBK 终端无法打印 Unicode 特殊字符 (如 ®) 导致崩溃
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception: pass
+if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
+    try: sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception: pass
 from scipy.signal import butter, sosfilt, sosfilt_zi, iirnotch, lfilter, lfilter_zi
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
@@ -37,6 +45,40 @@ def _wasapi_extra(dev_idx):
     except Exception:
         pass
     return None
+
+
+def _find_test_device(dev_idx):
+    """测试录音用: 若设备是 WASAPI，找 DirectSound/MME 等效设备以避免设备锁冲突。
+    
+    WASAPI 设备在引擎 stop() 后句柄释放慢，sd.rec() 会因 -9999 失败。
+    DirectSound/MME 不存在此问题，用于测试录音最可靠。
+    """
+    try:
+        info = sd.query_devices(dev_idx)
+        api_name = sd.query_hostapis(info['hostapi'])['name']
+        if 'WASAPI' not in api_name:
+            return dev_idx  # 非 WASAPI, 直接用
+        # 找同名设备的 DirectSound 或 MME 版本
+        target_name = info['name']
+        devices = sd.query_devices()
+        best_idx, best_prio = dev_idx, 9
+        prio_map = {'Windows DirectSound': 0, 'MME': 1}
+        for i, d in enumerate(devices):
+            if d['max_input_channels'] <= 0:
+                continue
+            a = sd.query_hostapis(d['hostapi'])['name']
+            p = prio_map.get(a, 9)
+            if p >= 9:
+                continue
+            # 前缀匹配 (MME 截断名称)
+            short = min(d['name'], target_name, key=len)
+            long = max(d['name'], target_name, key=len)
+            if long.startswith(short) and p < best_prio:
+                best_idx = i
+                best_prio = p
+        return best_idx
+    except Exception:
+        return dev_idx
 
 
 # ═══════════════════════════════════════════════
@@ -1365,13 +1407,14 @@ def _test_sync(idx):
     """测试检波器录音 — sd.rec() 直接录制，带通滤波+放大"""
     try:
         idx = int(idx)
-        info = sd.query_devices(idx)
+        rec_idx = _find_test_device(idx)  # WASAPI→DirectSound 避免设备锁
+        info = sd.query_devices(rec_idx)
         sr = int(info['default_samplerate'])
         dur = 3
         
         time.sleep(0.3)
         audio = sd.rec(int(sr * dur), samplerate=sr, channels=1,
-                       device=idx, dtype='float32', blocking=True)[:, 0]
+                       device=rec_idx, dtype='float32', blocking=True)[:, 0]
         
         raw_rms = float(np.sqrt(np.mean(audio**2)))
         raw_peak = float(np.max(np.abs(audio)))
@@ -1431,7 +1474,8 @@ async def test_mic(request: Request):
 def _test_mic_sync(idx):
     """试听麦克风 — sd.rec() 直接录制原始音频"""
     try:
-        info = sd.query_devices(idx)
+        rec_idx = _find_test_device(idx)  # WASAPI→DirectSound 避免设备锁
+        info = sd.query_devices(rec_idx)
         if info['max_input_channels'] <= 0:
             return {'ok': False, 'error': '不是输入设备'}
         sr = int(info['default_samplerate'])
@@ -1439,7 +1483,7 @@ def _test_mic_sync(idx):
         
         time.sleep(0.3)
         audio = sd.rec(int(sr * dur), samplerate=sr, channels=1,
-                       device=idx, dtype='float32', blocking=True)[:, 0]
+                       device=rec_idx, dtype='float32', blocking=True)[:, 0]
         
         rms = float(np.sqrt(np.mean(audio**2)))
         rms_db = round(20 * np.log10(max(rms, 1e-10)), 1)

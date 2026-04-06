@@ -24,7 +24,7 @@
     },
     "calibration": {
         "calibrated": true,
-        "noise_floor_db": -85.04250128825872,
+        "noise_floor_db": -116.65873452962104,
         "duration_seconds": 5,
         "noise_band_power": [
             1e-10,

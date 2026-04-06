@@ -247,19 +247,21 @@ html,body,#app{height:100%;font-family:"Microsoft YaHei",system-ui,sans-serif}
               </el-form>
             </div>
 
-            <!-- 会议麦 -->
+            <!-- 室内麦克风 -->
             <div class="setting-section">
-              <h3>🎙️ 会议麦 (室内声源过滤)</h3>
-              <div class="desc">当室内有说话/活动声时，自动抑制检波器误报</div>
+              <h3>🎙️ 室内麦克风 (多设备声源过滤)</h3>
+              <div class="desc">勾选除检波器外的所有麦克风，用于检测室内说话/活动声并自动抑制误报</div>
               <el-form label-position="top" size="default">
                 <el-form-item><el-switch v-model="micEnabled" active-text="开启" inactive-text="关闭" /></el-form-item>
-                <el-form-item v-if="micEnabled" label="麦克风设备">
-                  <div style="display:flex;gap:8px;width:100%">
-                    <el-select v-model="micDevice" style="flex:1" placeholder="选择会议麦">
-                      <el-option v-for="d in devices" :key="'mic'+d.index" :value="d.index"
-                        :label="d.name+' ['+d.host_api+'] '+d.sample_rate+'Hz'" />
-                    </el-select>
-                  </div>
+                <el-form-item v-if="micEnabled" label="选择室内麦克风（可多选，检波器自动排除）">
+                  <el-checkbox-group v-model="micDevices">
+                    <div v-for="d in devices.filter(x => x.index !== selDevice)" :key="'mic'+d.index" style="display:flex;align-items:center;gap:8px;margin:4px 0">
+                      <el-checkbox :value="d.index" :label="d.name+' ['+d.host_api+'] '+d.sample_rate+'Hz'" />
+                      <el-button size="small" :loading="micTesting[d.index]" @click="testMic(d.index)" plain>试听</el-button>
+                      <el-button v-if="micTestResult[d.index]?.ok" size="small" @click="playMicTest(d.index)" plain>▶</el-button>
+                      <span v-if="micTestResult[d.index]" style="font-size:12px" :style="{color:micTestResult[d.index].ok?'#67c23a':'#f56c6c'}">{{micTestResult[d.index].msg}}</span>
+                    </div>
+                  </el-checkbox-group>
                 </el-form-item>
                 <el-form-item v-if="micEnabled" label="室内声音阈值 (dB) — 超过此值视为室内有声">
                   <el-slider v-model="micThresholdDb" :min="-70" :max="-10" :step="1" show-input input-size="small" />
@@ -399,8 +401,10 @@ const app = createApp({
     const schedStart = ref('22:00');
     const schedEnd = ref('08:00');
     const micEnabled = ref(false);
-    const micDevice = ref(-1);
+    const micDevices = ref([]);
     const micThresholdDb = ref(-40);
+    const micTesting = ref({});   // {devIdx: true/false}
+    const micTestResult = ref({}); // {devIdx: {ok, msg}}
 
     // 图表 refs
     const waveCanvas = ref(null);
@@ -576,7 +580,7 @@ const app = createApp({
         schedStart.value=s.schedule?.start_time??'22:00';
         schedEnd.value=s.schedule?.end_time??'08:00';
         micEnabled.value=s.mic?.enabled??false;
-        micDevice.value=s.mic?.index??-1;
+        micDevices.value=s.mic?.devices??[];
         micThresholdDb.value=s.mic?.threshold_db??-40;
         nextTick(()=>{ _loadingSettings=false; });
       }catch(e){ _loadingSettings=false; console.warn('loadSettings failed',e); }
@@ -605,6 +609,21 @@ const app = createApp({
     function playTest(){
       new Audio('/api/test-playback?t='+Date.now()).play().catch(()=>{});
     }
+    async function testMic(devIdx){
+      micTesting.value={...micTesting.value,[devIdx]:true};
+      micTestResult.value={...micTestResult.value,[devIdx]:{ok:false,msg:'录音中...'}};
+      try{
+        const r=await fetch('/api/test-mic',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({device_index:devIdx})});
+        const d=await r.json();
+        if(d.ok){ micTestResult.value={...micTestResult.value,[devIdx]:{ok:true,msg:`✅ ${d.rms_db}dB ${d.device}`}}; }
+        else{ micTestResult.value={...micTestResult.value,[devIdx]:{ok:false,msg:'❌ '+d.error}}; }
+      }catch(e){ micTestResult.value={...micTestResult.value,[devIdx]:{ok:false,msg:'❌ 请求失败'}}; }
+      micTesting.value={...micTesting.value,[devIdx]:false};
+    }
+    function playMicTest(devIdx){
+      new Audio(`/api/test-mic-playback/${devIdx}?t=${Date.now()}`).play().catch(()=>{});
+    }
     function previewAlert(){
       new Audio(`/api/alert-sound/${alertSound.value}?t=${Date.now()}`).play().catch(()=>{});
     }
@@ -618,7 +637,7 @@ const app = createApp({
             alert_enabled:alertEnabled.value, alert_sound:alertSound.value,
             alert_interval:alertInterval.value,
             schedule_enabled:schedEnabled.value, schedule_start:schedStart.value, schedule_end:schedEnd.value,
-            mic_enabled:micEnabled.value, mic_index:micDevice.value, mic_threshold_db:micThresholdDb.value,
+            mic_enabled:micEnabled.value, mic_devices:micDevices.value, mic_threshold_db:micThresholdDb.value,
           })});
         if(!r.ok) throw new Error('HTTP '+r.status);
         ElementPlus.ElMessage.success('设置已保存');
@@ -677,9 +696,9 @@ const app = createApp({
       devices,selDevice,testing,testOk,testMsg,
       sensitivityDb,recEnabled,keepDays,
       alertEnabled,alertSound,alertSounds,alertInterval,schedEnabled,schedStart,schedEnd,
-      micEnabled,micDevice,micThresholdDb,
+      micEnabled,micDevices,micThresholdDb,micTesting,micTestResult,testMic,playMicTest,
       waveCanvas,specCanvas,dailyChart,hourlyChart,
-      toggling,toggleMonitor,doCalibrate,loadDevices,switchDevice,testDev,playTest,
+      toggling,toggleMonitor,doCalibrate,loadDevices,switchDevice,testDev,playTest,testMic,playMicTest,
       saveSettings,previewAlert,playRec,loadEvents,fmtTime,
       Refresh,Monitor,List,DataLine,Setting,
     };

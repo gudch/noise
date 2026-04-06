@@ -630,20 +630,28 @@ class Engine:
         # 波形缓冲
         self._wave_buf = np.zeros(self._sr * 3)
         
-        # 会议麦 (室内声源过滤)
+        # 室内麦克风 (多设备声源过滤)
+        # V4: 支持多个麦克风同时监测室内声音
+        # 除检波器外的所有输入设备均可用于室内声源过滤
         mic_cfg = cfg.get('mic') or {}
         self._mic_enabled = mic_cfg.get('enabled', False)
-        self._mic_idx = mic_cfg.get('index', -1)
-        if self._mic_idx == -1:
-            self._mic_idx = None
-        self._mic_sr = mic_cfg.get('sample_rate', 44100)
         self._mic_threshold_db = mic_cfg.get('threshold_db', -40)
-        self._mic_stream = None
-        self._mic_rms_db = -100.0
-        self._mic_active = False
-        self._mic_baseline_db = -100.0  # 麦克风底噪基线 (EMA跟踪)
-        self._mic_spike = False          # 室内声音突变 (用于过滤)
-        self._mic_lock = threading.Lock()  # 麦克风数据线程安全
+        
+        # 多麦克风: mic.devices = [idx1, idx2, ...]
+        # 兼容旧配置: mic.index (单个)
+        mic_devs = mic_cfg.get('devices', [])
+        old_idx = mic_cfg.get('index', -1)
+        if not mic_devs and old_idx >= 0:
+            mic_devs = [old_idx]
+        self._mic_devices = [d for d in mic_devs if d != self._dev_idx and d >= 0]
+        
+        self._mic_streams = []         # [(stream, dev_idx), ...]
+        self._mic_data = {}            # {dev_idx: {rms_db, spike, active, baseline_db}}
+        self._mic_lock = threading.Lock()
+        self._mic_rms_db = -100.0      # 兼容: 所有麦克风中最高的 rms_db
+        self._mic_active = False       # 兼容: 任一麦克风 active
+        self._mic_spike = False        # 兼容: 任一麦克风 spike
+        self._mic_baseline_db = -100.0 # 兼容: 取最高基线
         
         # 生效时段
         sched = cfg.get('schedule') or {}
@@ -709,68 +717,77 @@ class Engine:
             return str(e)
     
     def _start_mic(self):
-        """启动会议麦流 (室内声源检测)"""
+        """启动所有室内麦克风流（多设备并行）"""
         self._stop_mic()
-        if not self._mic_enabled or self._mic_idx is None:
+        if not self._mic_enabled or not self._mic_devices:
             return
-        # [安全检查] 会议麦不能与检波器是同一设备!
-        # 否则: 检波器振动 → 麦克风同时振动 → 误判"自家活动" → 一切事件被过滤!
-        if self._mic_idx == self._dev_idx:
-            print(f'[ENGINE] ⚠ 会议麦(dev={self._mic_idx})与检波器是同一设备, 已自动禁用麦克风过滤')
-            self._mic_enabled = False
-            return
-        try:
-            info = sd.query_devices(self._mic_idx)
-            sr = int(info['default_samplerate'])
-            self._mic_sr = sr
-            mic_extra = _wasapi_extra(self._mic_idx)
-            self._mic_stream = sd.InputStream(
-                device=self._mic_idx, samplerate=sr, channels=1,
-                blocksize=self._blk, dtype='float32', callback=self._mic_cb,
-                latency='low', extra_settings=mic_extra)
-            self._mic_stream.start()
-            print(f'[ENGINE] 会议麦已启动: dev={self._mic_idx}, sr={sr}, ex={mic_extra is not None}')
-        except Exception as e:
-            print(f'[ENGINE] 会议麦启动失败: {e}')
+        for dev_idx in self._mic_devices:
+            if dev_idx == self._dev_idx:
+                print(f'[MIC] ⚠ 设备{dev_idx}与检波器相同, 跳过')
+                continue
+            try:
+                info = sd.query_devices(dev_idx)
+                if info['max_input_channels'] <= 0:
+                    print(f'[MIC] ⚠ 设备{dev_idx}不是输入设备, 跳过')
+                    continue
+                sr = int(info['default_samplerate'])
+                with self._mic_lock:
+                    self._mic_data[dev_idx] = {
+                        'rms_db': -100.0, 'spike': False, 'active': False,
+                        'baseline_db': -100.0, 'name': info['name']
+                    }
+                mic_extra = _wasapi_extra(dev_idx)
+                def make_cb(didx):
+                    return lambda indata, frames, time_info, status: self._mic_cb(indata, didx)
+                stream = sd.InputStream(
+                    device=dev_idx, samplerate=sr, channels=1,
+                    blocksize=self._blk, dtype='float32', callback=make_cb(dev_idx),
+                    latency='low', extra_settings=mic_extra)
+                stream.start()
+                self._mic_streams.append((stream, dev_idx))
+                print(f'[MIC] 室内麦已启动: [{dev_idx}] {info["name"]}, sr={sr}')
+            except Exception as e:
+                print(f'[MIC] 设备{dev_idx}启动失败: {e}')
+        if not self._mic_streams:
+            print('[MIC] ⚠ 没有成功启动任何室内麦克风')
     
     def _stop_mic(self):
-        if self._mic_stream:
+        for stream, _ in self._mic_streams:
             try:
-                self._mic_stream.stop()
-                self._mic_stream.close()
+                stream.stop()
+                stream.close()
             except Exception:
                 pass
-            self._mic_stream = None
+        self._mic_streams = []
+        with self._mic_lock:
+            self._mic_data.clear()
     
-    def _mic_cb(self, indata, frames, time_info, status):
-        """会议麦回调 — 检测室内声音突变 (区分自家/楼上)
-        
-        核心思路: 跟踪麦克风的“基线”电平 (EMA), 检测突发偏离:
-        - TV/音乐 = 持续声音, 表现为稳定基线, 不触发spike
-        - 自己走路/说话/关门 = 突发声音, 比基线高6dB+ → spike
-        - 楼上走路 = 只有检波器有信号, 麦克风不会突变 → 不过滤
-        """
+    def _mic_cb(self, indata, dev_idx):
+        """多麦克风回调 - 检测室内声音突变"""
         try:
             audio = indata[:, 0]
             rms = float(np.sqrt(np.mean(audio ** 2)))
             db = round(20 * math.log10(max(rms, 1e-10)), 1)
             
-            # 指数移动平均跟踪基线
-            # 慢升快降: 突发声音不会快速拉高基线, 声音消失后基线快速回落
             with self._mic_lock:
-                if self._mic_baseline_db < -90:
-                    self._mic_baseline_db = db  # 首次初始化
+                d = self._mic_data.get(dev_idx)
+                if d is None:
+                    return
+                if d['baseline_db'] < -90:
+                    d['baseline_db'] = db
                 else:
-                    if db > self._mic_baseline_db:
-                        alpha = 0.008  # 上升慢
-                    else:
-                        alpha = 0.05   # 下降快
-                    self._mic_baseline_db = self._mic_baseline_db * (1 - alpha) + db * alpha
+                    alpha = 0.008 if db > d['baseline_db'] else 0.05
+                    d['baseline_db'] = d['baseline_db'] * (1 - alpha) + db * alpha
                 
-                mic_jump = db - self._mic_baseline_db
-                self._mic_rms_db = db
-                self._mic_spike = mic_jump > 6
-                self._mic_active = db > self._mic_threshold_db
+                d['rms_db'] = db
+                d['spike'] = (db - d['baseline_db']) > 6
+                d['active'] = db > self._mic_threshold_db
+                
+                all_d = list(self._mic_data.values())
+                self._mic_rms_db = max(x['rms_db'] for x in all_d)
+                self._mic_spike = any(x['spike'] for x in all_d)
+                self._mic_active = any(x['active'] for x in all_d)
+                self._mic_baseline_db = max(x['baseline_db'] for x in all_d)
         except Exception:
             pass
     
@@ -899,6 +916,7 @@ class Engine:
                     'mic_spike': self._mic_spike,
                     'mic_baseline_db': round(self._mic_baseline_db, 1) if self._mic_baseline_db > -95 else -100.0,
                     'mic_threshold_db': self._mic_threshold_db,
+                    'mic_devices_status': {str(k): {'rms_db': v['rms_db'], 'spike': v['spike'], 'name': v.get('name', '')} for k, v in self._mic_data.items()} if self._mic_data else {},
                 }
         except Exception as e:
             import traceback
@@ -1104,28 +1122,19 @@ class Engine:
         if 'mic_enabled' in s:
             self._mic_enabled = bool(s['mic_enabled'])
             self.config.set('mic', 'enabled', self._mic_enabled)
-        if 'mic_index' in s:
-            idx = int(s['mic_index'])
-            self._mic_idx = None if idx == -1 else idx
-            # 前置校验: 麦克风不能与检波器是同一设备
-            if self._mic_idx is not None and self._mic_idx == self._dev_idx:
-                print(f'[SETTINGS] ⚠ 麦克风(dev={self._mic_idx})与检波器相同, 已拒绝')
-                self._mic_idx = None
-                self._mic_enabled = False
-                self.config.set('mic', 'enabled', False)
-            self.config.set('mic', 'index', self._mic_idx if self._mic_idx is not None else -1)
-            if self._mic_idx is not None:
-                try:
-                    info = sd.query_devices(self._mic_idx)
-                    self._mic_sr = int(info['default_samplerate'])
-                    self.config.set('mic', 'sample_rate', self._mic_sr)
-                except Exception:
-                    pass
+        if 'mic_devices' in s:
+            raw = s['mic_devices']
+            if isinstance(raw, list):
+                devs = [int(x) for x in raw if int(x) >= 0]
+            else:
+                devs = [int(raw)] if int(raw) >= 0 else []
+            self._mic_devices = [d for d in devs if d != self._dev_idx]
+            self.config.set('mic', 'devices', self._mic_devices)
         if 'mic_threshold_db' in s:
             self._mic_threshold_db = int(s['mic_threshold_db'])
             self.config.set('mic', 'threshold_db', self._mic_threshold_db)
         # 麦克风设置变更时重启麦克风流
-        if any(k in s for k in ('mic_enabled', 'mic_index', 'mic_threshold_db')):
+        if any(k in s for k in ('mic_enabled', 'mic_devices', 'mic_threshold_db')):
             if self.monitoring:
                 self._start_mic()
         self.config.save()
@@ -1226,7 +1235,7 @@ async def get_settings():
                      'start_time': sched.get('start_time', '22:00'),
                      'end_time': sched.get('end_time', '08:00')},
         'mic': {'enabled': mic.get('enabled', False),
-                'index': mic.get('index', -1),
+                'devices': mic.get('devices', []),
                 'threshold_db': mic.get('threshold_db', -40)},
     }
 
@@ -1361,6 +1370,52 @@ def _test_sync(idx):
 @app.get('/api/test-playback')
 async def test_playback():
     path = os.path.join(BASE_DIR, 'web', 'test_rec.wav')
+    if not os.path.exists(path):
+        return JSONResponse({'error': '无录音'}, 404)
+    return FileResponse(path, media_type='audio/wav',
+                        headers={'Cache-Control': 'no-store'})
+
+@app.post('/api/test-mic')
+async def test_mic(request: Request):
+    """试听麦克风 — 录制2秒原始音频（不滤波，仅轻度归一化）"""
+    body = await request.json()
+    idx = body.get('device_index')
+    if idx is None:
+        return JSONResponse({'error': 'no device'}, 400)
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _test_mic_sync, int(idx))
+    return result
+
+def _test_mic_sync(idx):
+    try:
+        info = sd.query_devices(idx)
+        if info['max_input_channels'] <= 0:
+            return {'ok': False, 'error': '不是输入设备'}
+        sr = int(info['default_samplerate'])
+        dur = 2
+        audio = sd.rec(int(sr * dur), samplerate=sr, channels=1,
+                       device=idx, dtype='float32', blocking=True)
+        audio = audio[:, 0]
+        rms = float(np.sqrt(np.mean(audio**2)))
+        rms_db = round(20 * np.log10(max(rms, 1e-10)), 1)
+        peak = float(np.max(np.abs(audio)))
+        # 轻度归一化: 只防削波, 不过度放大
+        if peak > 0.01:
+            audio = audio * min(0.9 / peak, 3.0)
+        path = os.path.join(BASE_DIR, 'web', f'test_mic_{idx}.wav')
+        with wave.open(path, 'w') as wf:
+            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
+            pcm = (audio * 32767).clip(-32768, 32767).astype(np.int16)
+            wf.writeframes(pcm.tobytes())
+        api_name = sd.query_hostapis(info['hostapi'])['name']
+        return {'ok': True, 'rms_db': rms_db, 'peak': round(peak, 6),
+                'device': info['name'], 'api': api_name, 'device_index': idx}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+
+@app.get('/api/test-mic-playback/{idx}')
+async def test_mic_playback(idx: int):
+    path = os.path.join(BASE_DIR, 'web', f'test_mic_{idx}.wav')
     if not os.path.exists(path):
         return JSONResponse({'error': '无录音'}, 404)
     return FileResponse(path, media_type='audio/wav',

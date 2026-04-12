@@ -1273,7 +1273,8 @@ _ensure_knock()
 def _list_alerts():
     labels = {'knock.wav': '敲墙声 (咚咚咚)', 'water_drop.wav': '水滴声', 'qq_online.wav': 'QQ上线',
               'qq_msg.wav': 'QQ消息', 'wechat_msg.wav': '微信消息', 'default_beep.wav': '默认提示音',
-              'close_door.mp3': '关门声'}
+              'close_door.mp3': '关门声', '严重警告.mp3': '严重警告 🚨', '大货车鸣笛警告.mp3': '大货车鸣笛警告 🚛',
+              '脚步声.mp3': '脚步声 👣', '车辆鸣笛警告.mp3': '车辆鸣笛警告 🚗', '锣鼓.mp3': '锣鼓 🥁'}
     result = []
     if os.path.isdir(ALERTS_DIR):
         for f in sorted(os.listdir(ALERTS_DIR)):
